@@ -4,13 +4,13 @@
   "description": "AERTH BUNDLER - Automated token launch, volume simulation, and coordinated exit on Solana",
   "main": "dist/app.js",
   "scripts": {
-  "start": "ts-node src/app.ts",
-  "dev": "nodemon --exec ts-node src/app.ts",
-  "generate-wallets": "ts-node src/scripts/generateWallets.ts",
-  "fund": "ts-node src/scripts/fundWallets.ts",
+  "start": "npx ts-node src/app.ts",
+  "dev": "npx nodemon --exec npx ts-node src/app.ts",
+  "generate-wallets": "npx ts-node src/scripts/generateWallets.ts",
+  "fund": "npx ts-node src/scripts/fundWallets.ts",
   "build": "tsc",
-  "test": "ts-node test/devnet.test.ts"
-   },
+  "test": "npx ts-node test/devnet.test.ts"
+},
   "dependencies": {
     "@metaplex-foundation/mpl-token-metadata": "^2.7.0",
     "@project-serum/anchor": "^0.29.0",
