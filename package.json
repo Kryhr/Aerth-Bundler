@@ -1,0 +1,44 @@
+{
+  "name": "aerth-bundler",
+  "version": "1.0.0",
+  "description": "AERTH BUNDLER - Automated token launch, volume simulation, and coordinated exit on Solana",
+  "main": "dist/app.js",
+  "scripts": {
+    "start": "ts-node src/app.ts",
+    "dev": "nodemon --exec ts-node src/app.ts",
+    "build": "tsc",
+    "fund": "ts-node src/scripts/fundWallets.ts",
+    "dashboard": "ts-node src/dashboard/server.ts",
+    "test": "ts-node test/devnet.test.ts",
+    "clean": "rm -rf dist/ wallets/*.json logs/",
+    "help": "ts-node src/app.ts --help"
+  },
+  "dependencies": {
+    "@metaplex-foundation/mpl-token-metadata": "^2.7.0",
+    "@project-serum/anchor": "^0.29.0",
+    "@solana/spl-token": "^0.3.9",
+    "@solana/web3.js": "^1.87.0",
+    "bip39": "^3.1.0",
+    "blessed": "^0.1.81",
+    "bs58": "^5.0.0",
+    "chalk": "^4.1.2",
+    "dotenv": "^16.3.1",
+    "ed25519-hd-key": "^1.3.0",
+    "express": "^4.18.2",
+    "node-fetch": "^2.7.0",
+    "socket.io": "^4.7.2",
+    "tweetnacl": "^1.0.3",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "@types/blessed": "^0.1.24",
+    "@types/node": "^20.10.0",
+    "@types/node-fetch": "^2.6.9",
+    "nodemon": "^3.0.2",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
