@@ -22,7 +22,7 @@ One of the highest tech and advanced rug pulling systems for meme coins.
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/aerth-bundler.git
+git clone https://github.com/kryhr/aerth-bundler.git
 cd aerth-bundler
 
 # Install dependencies
