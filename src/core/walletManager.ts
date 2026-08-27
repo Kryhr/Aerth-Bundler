@@ -14,7 +14,6 @@ import {
 } from '@solana/web3.js';
 import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from 'bip39';
 import { derivePath } from 'ed25519-hd-key';
-import nacl from 'tweetnacl';
 import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
@@ -27,8 +26,7 @@ import {
   shortAddress,
   ensureDirectory,
   fileExists,
-  formatSol,
-  processBatch
+  formatSol
 } from '../utils/helpers';
 import { DEFAULT_CONFIG, WALLET_CONFIG, WalletInfo } from '../config/constants';
 
@@ -38,8 +36,8 @@ import { DEFAULT_CONFIG, WALLET_CONFIG, WalletInfo } from '../config/constants';
 
 interface EncryptedWalletData {
   publicKey: string;
-  encryptedPrivateKey: string; // Base64 encoded
-  encryptedSeedPhrase?: string; // Base64 encoded
+  encryptedPrivateKey: string;
+  encryptedSeedPhrase?: string;
   index: number;
   label?: string;
   createdAt: number;
@@ -86,10 +84,6 @@ export class WalletManager {
   // INITIALIZATION
   // ============================================================
 
-  /**
-   * Initialize the wallet manager
-   * Creates wallet folder if it doesn't exist
-   */
   async initialize(): Promise<void> {
     if (this.isInitialized) return;
     
@@ -101,19 +95,16 @@ export class WalletManager {
   }
 
   // ============================================================
-  // WALLET GENERATION
+  // WALLET GENERATION - FIXED
   // ============================================================
 
-  /**
-   * Generate a single wallet with seed phrase
-   */
   generateWallet(index: number, label?: string): WalletInfo {
     // Generate mnemonic (12 words)
-    const mnemonic = generateMnemonic(128); // 12 words
+    const mnemonic = generateMnemonic(128);
     const seed = mnemonicToSeedSync(mnemonic);
     
-    // Derive keypair from seed
-    const path = `${WALLET_CONFIG.derivationPath}/${index}'`;
+    // Derive keypair from seed - FIXED PATH FORMAT
+    const path = `m/44'/501'/${index}'/0'`;
     const derivedSeed = derivePath(path, seed.toString('hex')).key;
     const keypair = Keypair.fromSeed(derivedSeed);
     
@@ -130,9 +121,6 @@ export class WalletManager {
     return wallet;
   }
 
-  /**
-   * Generate multiple wallets
-   */
   generateWallets(count: number = DEFAULT_CONFIG.numberOfWallets): WalletInfo[] {
     logger.info(`Generating ${count} wallets...`);
     
@@ -143,7 +131,6 @@ export class WalletManager {
       const wallet = this.generateWallet(i);
       wallets.push(wallet);
       
-      // Log progress every 10 wallets
       if ((i + 1) % 10 === 0 || i === count - 1) {
         logger.progress(i + 1, count, 'Generating wallets');
       }
@@ -156,9 +143,6 @@ export class WalletManager {
     return wallets;
   }
 
-  /**
-   * Generate wallets with specific labels
-   */
   generateWalletsWithLabels(count: number, labels: string[]): WalletInfo[] {
     const wallets = this.generateWallets(count);
     wallets.forEach((wallet, index) => {
@@ -170,9 +154,6 @@ export class WalletManager {
     return wallets;
   }
 
-  /**
-   * Import wallet from private key
-   */
   importWallet(privateKeyBase64: string, index: number, label?: string): WalletInfo {
     const secretKey = Buffer.from(privateKeyBase64, 'base64');
     const keypair = Keypair.fromSecretKey(secretKey);
@@ -190,16 +171,14 @@ export class WalletManager {
     return wallet;
   }
 
-  /**
-   * Import wallet from seed phrase
-   */
   importWalletFromSeed(seedPhrase: string, index: number, label?: string): WalletInfo {
     if (!validateMnemonic(seedPhrase)) {
       throw new Error('Invalid seed phrase');
     }
     
     const seed = mnemonicToSeedSync(seedPhrase);
-    const path = `${WALLET_CONFIG.derivationPath}/${index}'`;
+    // FIXED PATH FORMAT
+    const path = `m/44'/501'/${index}'/0'`;
     const derivedSeed = derivePath(path, seed.toString('hex')).key;
     const keypair = Keypair.fromSeed(derivedSeed);
     
@@ -217,12 +196,8 @@ export class WalletManager {
     return wallet;
   }
 
-  /**
-   * Create main wallet (from existing key or generate new)
-   */
   async createMainWallet(privateKeyBase64?: string): Promise<WalletInfo> {
     if (privateKeyBase64) {
-      // Import existing main wallet
       const wallet = this.importWallet(privateKeyBase64, -1, 'Main_Wallet');
       this.mainWallet = wallet;
       logger.success('Main wallet imported', { 
@@ -231,12 +206,26 @@ export class WalletManager {
       return wallet;
     }
     
-    // Generate new main wallet
-    const wallet = this.generateWallet(-1, 'Main_Wallet');
+    // Generate new main wallet - FIXED: use index -1 but proper path
+    const mnemonic = generateMnemonic(128);
+    const seed = mnemonicToSeedSync(mnemonic);
+    const path = `m/44'/501'/0'/0'`;  // Main wallet uses index 0
+    const derivedSeed = derivePath(path, seed.toString('hex')).key;
+    const keypair = Keypair.fromSeed(derivedSeed);
+    
+    const wallet: WalletInfo = {
+      publicKey: keypair.publicKey.toBase58(),
+      privateKey: Buffer.from(keypair.secretKey).toString('base64'),
+      seedPhrase: mnemonic,
+      balance: 0,
+      tokenBalance: 0,
+      index: -1,
+      label: 'Main_Wallet'
+    };
+    
     this.mainWallet = wallet;
     logger.success('Main wallet generated', { 
-      address: shortAddress(wallet.publicKey),
-      seedPhrase: wallet.seedPhrase?.slice(0, 20) + '...'
+      address: shortAddress(wallet.publicKey)
     });
     return wallet;
   }
@@ -245,9 +234,6 @@ export class WalletManager {
   // ENCRYPTION
   // ============================================================
 
-  /**
-   * Encrypt data with password
-   */
   private encryptData(data: string): string {
     const salt = crypto.randomBytes(16);
     const key = crypto.pbkdf2Sync(
@@ -264,7 +250,6 @@ export class WalletManager {
     let encrypted = cipher.update(data, 'utf8', 'base64');
     encrypted += cipher.final('base64');
     
-    // Combine salt + iv + encrypted data
     const combined = Buffer.concat([
       salt,
       iv,
@@ -274,9 +259,6 @@ export class WalletManager {
     return combined.toString('base64');
   }
 
-  /**
-   * Decrypt data with password
-   */
   private decryptData(encryptedData: string): string {
     const combined = Buffer.from(encryptedData, 'base64');
     
@@ -300,9 +282,6 @@ export class WalletManager {
     return decrypted;
   }
 
-  /**
-   * Encrypt wallet info
-   */
   private encryptWallet(wallet: WalletInfo): EncryptedWalletData {
     return {
       publicKey: wallet.publicKey,
@@ -315,9 +294,6 @@ export class WalletManager {
     };
   }
 
-  /**
-   * Decrypt wallet info
-   */
   private decryptWallet(encrypted: EncryptedWalletData): WalletInfo {
     return {
       publicKey: encrypted.publicKey,
@@ -334,9 +310,6 @@ export class WalletManager {
   // STORAGE
   // ============================================================
 
-  /**
-   * Save wallets to file
-   */
   async saveWallets(filename: string = 'wallets.json'): Promise<void> {
     if (!this.isInitialized) {
       await this.initialize();
@@ -344,7 +317,6 @@ export class WalletManager {
     
     const filePath = path.join(this.walletFolder, filename);
     
-    // Prepare encrypted wallet data
     const encryptedWallets = this.wallets.map(w => this.encryptWallet(w));
     const encryptedMainWallet = this.mainWallet ? this.encryptWallet(this.mainWallet) : undefined;
     
@@ -362,9 +334,6 @@ export class WalletManager {
     });
   }
 
-  /**
-   * Load wallets from file
-   */
   async loadWallets(filename: string = 'wallets.json'): Promise<WalletInfo[]> {
     if (!this.isInitialized) {
       await this.initialize();
@@ -379,11 +348,9 @@ export class WalletManager {
     const content = await fs.readFile(filePath, 'utf-8');
     const data: WalletFile = JSON.parse(content);
     
-    // Decrypt wallets
     const wallets = data.wallets.map(w => this.decryptWallet(w));
     this.wallets = wallets;
     
-    // Load main wallet if exists
     if (data.mainWallet) {
       this.mainWallet = this.decryptWallet(data.mainWallet);
     }
@@ -395,9 +362,6 @@ export class WalletManager {
     return wallets;
   }
 
-  /**
-   * Export wallet addresses to text file (for funding)
-   */
   async exportAddresses(filename: string = 'addresses.txt'): Promise<void> {
     if (!this.isInitialized) {
       await this.initialize();
@@ -409,14 +373,12 @@ export class WalletManager {
     output += `Generated: ${new Date().toLocaleString()}\n`;
     output += `Total Wallets: ${this.wallets.length}\n\n`;
     
-    // Main wallet
     if (this.mainWallet) {
       output += `MAIN WALLET:\n`;
       output += `  Address: ${this.mainWallet.publicKey}\n`;
       output += `  Label: ${this.mainWallet.label}\n\n`;
     }
     
-    // Sub wallets
     output += `SUB WALLETS (${this.wallets.length}):\n`;
     this.wallets.forEach((wallet, index) => {
       output += `${index + 1}. ${wallet.publicKey}`;
@@ -436,9 +398,6 @@ export class WalletManager {
   // BALANCE CHECKING
   // ============================================================
 
-  /**
-   * Get SOL balance for a wallet
-   */
   async getBalance(wallet: WalletInfo): Promise<number> {
     try {
       const publicKey = new PublicKey(wallet.publicKey);
@@ -450,9 +409,6 @@ export class WalletManager {
     }
   }
 
-  /**
-   * Get balances for all wallets
-   */
   async getAllBalances(): Promise<WalletWithBalance[]> {
     const results: WalletWithBalance[] = [];
     
@@ -462,16 +418,13 @@ export class WalletManager {
         ...wallet,
         solBalance,
         tokenBalance: wallet.tokenBalance || 0,
-        isFunded: solBalance > 0.001 // At least 0.001 SOL
+        isFunded: solBalance > 0.001
       });
     }
     
     return results;
   }
 
-  /**
-   * Check if all wallets are funded
-   */
   async checkAllFunded(minBalance: number = 0.001): Promise<boolean> {
     const balances = await this.getAllBalances();
     const unfunded = balances.filter(w => w.solBalance < minBalance);
@@ -492,24 +445,10 @@ export class WalletManager {
     return false;
   }
 
-  /**
-   * Get funding requirement
-   */
-  async getFundingRequirement(
-    amountPerWallet: number = 0.1,
-    numberOfWallets?: number
-  ): Promise<number> {
-    const count = numberOfWallets || this.wallets.length;
-    return amountPerWallet * count;
-  }
-
   // ============================================================
   // FUNDING
   // ============================================================
 
-  /**
-   * Distribute SOL from main wallet to sub wallets
-   */
   async distributeSOL(
     amountPerWallet: number | 'random' = 'random',
     minAmount: number = 0.05,
@@ -526,7 +465,6 @@ export class WalletManager {
       throw new Error('No sub wallets to fund. Generate wallets first.');
     }
     
-    // Check main wallet balance
     const mainBalance = await this.getBalance(this.mainWallet);
     const totalNeeded = this.wallets.length * (typeof amountPerWallet === 'number' ? amountPerWallet : maxAmount);
     
@@ -543,7 +481,6 @@ export class WalletManager {
     const transactions: Array<{ wallet: string; amount: number; signature: string }> = [];
     let totalDistributed = 0;
     
-    // Process in batches
     const batchSize = 5;
     const batches = [];
     for (let i = 0; i < this.wallets.length; i += batchSize) {
@@ -559,7 +496,6 @@ export class WalletManager {
       );
       
       for (const wallet of batch) {
-        // Calculate amount
         let amount: number;
         if (amountPerWallet === 'random') {
           amount = randomSolAmount(minAmount, maxAmount);
@@ -567,7 +503,6 @@ export class WalletManager {
           amount = amountPerWallet;
         }
         
-        // Ensure we don't spend more than 80% of main balance
         const remaining = mainBalance - totalDistributed;
         if (amount > remaining * 0.8) {
           amount = remaining * 0.8 / (this.wallets.length - transactions.length);
@@ -587,13 +522,9 @@ export class WalletManager {
           });
           
           totalDistributed += amount;
-          
-          // Update wallet balance
           wallet.balance += amount;
           
           logger.debug(`Sent ${formatSol(amount)} to ${shortAddress(wallet.publicKey)}`);
-          
-          // Small delay between transactions
           await sleep(500);
           
         } catch (error) {
@@ -601,7 +532,6 @@ export class WalletManager {
         }
       }
       
-      // Delay between batches
       if (batchIndex < batches.length - 1) {
         await sleep(2000);
       }
@@ -615,13 +545,10 @@ export class WalletManager {
     };
   }
 
-  /**
-   * Send SOL transaction
-   */
   private async sendTransaction(
     from: WalletInfo,
     to: WalletInfo,
-    amount: SOL
+    amount: number
   ): Promise<string> {
     const fromKeypair = Keypair.fromSecretKey(
       Buffer.from(from.privateKey, 'base64')
@@ -646,86 +573,38 @@ export class WalletManager {
   }
 
   // ============================================================
-  // TRANSACTION HISTORY
-  // ============================================================
-
-  /**
-   * Get transaction history for a wallet
-   */
-  async getTransactionHistory(
-    wallet: WalletInfo,
-    limit: number = 10
-  ): Promise<any[]> {
-    try {
-      const publicKey = new PublicKey(wallet.publicKey);
-      const signatures = await this.connection.getSignaturesForAddress(
-        publicKey,
-        { limit }
-      );
-      return signatures;
-    } catch (error) {
-      logger.error(`Failed to get transaction history for ${shortAddress(wallet.publicKey)}`, error);
-      return [];
-    }
-  }
-
-  // ============================================================
   // UTILITY FUNCTIONS
   // ============================================================
 
-  /**
-   * Get all wallet addresses (for display)
-   */
   getAddresses(): string[] {
     return this.wallets.map(w => w.publicKey);
   }
 
-  /**
-   * Get all wallet info
-   */
   getWallets(): WalletInfo[] {
     return this.wallets;
   }
 
-  /**
-   * Get a wallet by index
-   */
   getWalletByIndex(index: number): WalletInfo | undefined {
     return this.wallets.find(w => w.index === index);
   }
 
-  /**
-   * Get a wallet by address
-   */
   getWalletByAddress(address: string): WalletInfo | undefined {
     return this.wallets.find(w => w.publicKey === address);
   }
 
-  /**
-   * Get main wallet
-   */
   getMainWallet(): WalletInfo | null {
     return this.mainWallet;
   }
 
-  /**
-   * Get total number of wallets
-   */
   getTotalWallets(): number {
     return this.wallets.length;
   }
 
-  /**
-   * Clear all wallets (memory only, doesn't delete files)
-   */
   clearWallets(): void {
     this.wallets = [];
     logger.info('Wallets cleared from memory');
   }
 
-  /**
-   * Delete wallet file
-   */
   async deleteWalletFile(filename: string = 'wallets.json'): Promise<void> {
     const filePath = path.join(this.walletFolder, filename);
     if (await fileExists(filePath)) {
@@ -738,9 +617,6 @@ export class WalletManager {
   // SUMMARY
   // ============================================================
 
-  /**
-   * Get wallet summary
-   */
   async getSummary(): Promise<{
     totalWallets: number;
     mainWallet: string | null;
@@ -761,9 +637,6 @@ export class WalletManager {
     };
   }
 
-  /**
-   * Print summary to console
-   */
   async printSummary(): Promise<void> {
     const summary = await this.getSummary();
     
@@ -778,9 +651,5 @@ export class WalletManager {
     logger.divider('═');
   }
 }
-
-// ============================================================
-// EXPORT
-// ============================================================
 
 export default WalletManager;
