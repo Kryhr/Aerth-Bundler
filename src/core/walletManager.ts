@@ -445,134 +445,42 @@ export class WalletManager {
   }
 
   // ============================================================
-  // FUNDING - FIXED VERSION
+  // SEND TRANSACTION WITH RETRY
   // ============================================================
 
-  async distributeSOL(
-    amountPerWallet: number | 'random' = 'random',
-    minAmount: number = 0.05,
-    maxAmount: number = 0.5
-  ): Promise<{
-    totalDistributed: number;
-    transactions: Array<{ wallet: string; amount: number; signature: string }>;
-  }> {
-    if (!this.mainWallet) {
-      throw new Error('Main wallet not set. Call createMainWallet() first.');
-    }
+  private async sendTransactionWithRetry(
+    from: WalletInfo,
+    to: WalletInfo,
+    amount: number,
+    maxRetries: number = 5
+  ): Promise<string> {
+    let lastError: Error | null = null;
     
-    if (this.wallets.length === 0) {
-      throw new Error('No sub wallets to fund. Generate wallets first.');
-    }
-    
-    const mainBalance = await this.getBalance(this.mainWallet);
-    
-    // Calculate average amount for estimation
-    const avgAmount = (minAmount + maxAmount) / 2;
-    const estimatedTotal = this.wallets.length * avgAmount;
-    
-    // Only check if we have at least 80% of estimated total
-    // This allows for random distribution that might use less
-    const minimumRequired = estimatedTotal * 0.8;
-    
-    if (mainBalance < minimumRequired) {
-      throw new Error(
-        `Insufficient balance in main wallet. ` +
-        `Have: ${formatSol(mainBalance)}, Estimated Need: ${formatSol(estimatedTotal)}`
-      );
-    }
-    
-    logger.info(`Distributing SOL to ${this.wallets.length} wallets...`);
-    logger.info(`Main wallet balance: ${formatSol(mainBalance)}`);
-    logger.info(`Estimated distribution: ${formatSol(estimatedTotal)}`);
-    
-    const transactions: Array<{ wallet: string; amount: number; signature: string }> = [];
-    let totalDistributed = 0;
-    
-    // Determine actual amounts for each wallet
-    const amounts: number[] = [];
-    let totalToDistribute = 0;
-    
-    for (let i = 0; i < this.wallets.length; i++) {
-      let amount: number;
-      if (amountPerWallet === 'random') {
-        amount = randomSolAmount(minAmount, maxAmount);
-      } else {
-        amount = amountPerWallet;
-      }
-      amounts.push(amount);
-      totalToDistribute += amount;
-    }
-    
-    // If total exceeds main balance, scale down proportionally
-    if (totalToDistribute > mainBalance * 0.9) {
-      const scaleFactor = (mainBalance * 0.8) / totalToDistribute;
-      amounts.forEach((a, i) => {
-        amounts[i] = a * scaleFactor;
-      });
-      totalToDistribute = amounts.reduce((sum, a) => sum + a, 0);
-      logger.info(`Scaled amounts to fit balance: ${formatSol(totalToDistribute)}`);
-    }
-    
-    // Process in batches
-    const batchSize = 5;
-    const batches = [];
-    for (let i = 0; i < this.wallets.length; i += batchSize) {
-      batches.push(this.wallets.slice(i, i + batchSize));
-    }
-    
-    for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-      const batch = batches[batchIndex];
-      logger.progress(
-        batchIndex * batchSize + 1,
-        this.wallets.length,
-        'Distributing SOL'
-      );
-      
-      for (let i = 0; i < batch.length; i++) {
-        const wallet = batch[i];
-        const walletIndex = this.wallets.indexOf(wallet);
-        const amount = amounts[walletIndex];
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.sendTransaction(from, to, amount);
+      } catch (error: any) {
+        lastError = error;
+        const errorMsg = error?.message || String(error);
         
-        if (amount < 0.001) {
-          logger.warn(`Skipping ${wallet.label}: amount too small (${formatSol(amount)})`);
+        if (errorMsg.includes('429') || errorMsg.includes('Too Many Requests')) {
+          const waitTime = 3000 * Math.pow(2, attempt - 1);
+          logger.warn(`Rate limited, waiting ${waitTime/1000}s (attempt ${attempt}/${maxRetries})`);
+          await sleep(waitTime);
           continue;
         }
         
-        try {
-          const signature = await this.sendTransaction(
-            this.mainWallet,
-            wallet,
-            amount
-          );
-          
-          transactions.push({
-            wallet: shortAddress(wallet.publicKey),
-            amount,
-            signature
-          });
-          
-          totalDistributed += amount;
-          wallet.balance += amount;
-          
-          logger.debug(`Sent ${formatSol(amount)} to ${shortAddress(wallet.publicKey)}`);
-          await sleep(500);
-          
-        } catch (error) {
-          logger.error(`Failed to send SOL to ${shortAddress(wallet.publicKey)}`, error);
+        if (attempt === maxRetries) {
+          throw error;
         }
-      }
-      
-      if (batchIndex < batches.length - 1) {
-        await sleep(2000);
+        
+        const waitTime = 1000 * Math.pow(2, attempt - 1);
+        logger.warn(`Error: ${errorMsg}, retry ${attempt}/${maxRetries} in ${waitTime/1000}s`);
+        await sleep(waitTime);
       }
     }
     
-    logger.success(`Distributed ${formatSol(totalDistributed)} to ${transactions.length} wallets`);
-    
-    return {
-      totalDistributed,
-      transactions
-    };
+    throw lastError || new Error('Max retries exceeded');
   }
 
   private async sendTransaction(
@@ -600,6 +508,218 @@ export class WalletManager {
     );
     
     return signature;
+  }
+
+  // ============================================================
+  // DISTRIBUTE SOL - FIXED WITH RATE LIMITING
+  // ============================================================
+
+  async distributeSOL(
+    amountPerWallet: number | 'random' = 'random',
+    minAmount: number = 0.05,
+    maxAmount: number = 0.5
+  ): Promise<{
+    totalDistributed: number;
+    transactions: Array<{ wallet: string; amount: number; signature: string }>;
+  }> {
+    if (!this.mainWallet) {
+      throw new Error('Main wallet not set. Call createMainWallet() first.');
+    }
+    
+    if (this.wallets.length === 0) {
+      throw new Error('No sub wallets to fund. Generate wallets first.');
+    }
+    
+    const mainBalance = await this.getBalance(this.mainWallet);
+    
+    // Calculate amounts for each wallet first
+    const amounts: number[] = [];
+    let totalToDistribute = 0;
+    
+    for (let i = 0; i < this.wallets.length; i++) {
+      let amount: number;
+      if (amountPerWallet === 'random') {
+        amount = randomSolAmount(minAmount, maxAmount);
+      } else {
+        amount = amountPerWallet;
+      }
+      amounts.push(amount);
+      totalToDistribute += amount;
+    }
+    
+    // Use 80% of main balance max
+    const maxTotal = mainBalance * 0.8;
+    if (totalToDistribute > maxTotal) {
+      const scaleFactor = maxTotal / totalToDistribute;
+      amounts.forEach((a, i) => {
+        amounts[i] = a * scaleFactor;
+      });
+      totalToDistribute = amounts.reduce((sum, a) => sum + a, 0);
+      logger.info(`Scaled amounts to fit balance: ${formatSol(totalToDistribute)}`);
+    }
+    
+    if (totalToDistribute < 0.1) {
+      throw new Error(`Total to distribute (${formatSol(totalToDistribute)}) is too small.`);
+    }
+    
+    logger.info(`Distributing ${formatSol(totalToDistribute)} to ${this.wallets.length} wallets...`);
+    logger.info(`Main wallet balance: ${formatSol(mainBalance)}`);
+    
+    const transactions: Array<{ wallet: string; amount: number; signature: string }> = [];
+    let totalDistributed = 0;
+    
+    // Process ONE wallet at a time with longer delays to avoid rate limits
+    for (let i = 0; i < this.wallets.length; i++) {
+      const wallet = this.wallets[i];
+      const amount = amounts[i];
+      
+      if (amount < 0.001) {
+        logger.warn(`Skipping ${wallet.label}: amount too small (${formatSol(amount)})`);
+        continue;
+      }
+      
+      logger.progress(i + 1, this.wallets.length, 'Distributing SOL');
+      
+      try {
+        const signature = await this.sendTransactionWithRetry(
+          this.mainWallet,
+          wallet,
+          amount
+        );
+        
+        transactions.push({
+          wallet: shortAddress(wallet.publicKey),
+          amount,
+          signature
+        });
+        
+        totalDistributed += amount;
+        wallet.balance += amount;
+        
+        logger.debug(`Sent ${formatSol(amount)} to ${shortAddress(wallet.publicKey)}`);
+        
+      } catch (error: any) {
+        logger.error(`Failed to send to ${wallet.label}: ${error?.message || String(error)}`);
+      }
+      
+      // Longer delay between wallets to avoid rate limits
+      if (i < this.wallets.length - 1) {
+        await sleep(1500);
+      }
+    }
+    
+    logger.success(`Distributed ${formatSol(totalDistributed)} to ${transactions.length} wallets`);
+    
+    return {
+      totalDistributed,
+      transactions
+    };
+  }
+
+  // ============================================================
+  // RECLAIM SOL - NEW FUNCTION
+  // ============================================================
+
+  async reclaimSOL(
+    minBalanceToKeep: number = 0.001 // Keep tiny amount in sub-wallets for fees
+  ): Promise<{
+    totalReclaimed: number;
+    transactions: Array<{ wallet: string; amount: number; signature: string }>;
+  }> {
+    if (!this.mainWallet) {
+      throw new Error('Main wallet not set.');
+    }
+    
+    if (this.wallets.length === 0) {
+      throw new Error('No sub wallets to reclaim from.');
+    }
+    
+    logger.info(`Reclaiming SOL from ${this.wallets.length} sub-wallets to main wallet...`);
+    
+    const transactions: Array<{ wallet: string; amount: number; signature: string }> = [];
+    let totalReclaimed = 0;
+    
+    for (let i = 0; i < this.wallets.length; i++) {
+      const wallet = this.wallets[i];
+      const balance = await this.getBalance(wallet);
+      
+      // Calculate amount to reclaim (keep minBalanceToKeep for fees)
+      const amountToReclaim = balance - minBalanceToKeep;
+      
+      if (amountToReclaim < 0.001) {
+        logger.debug(`Skipping ${wallet.label}: balance too low (${formatSol(balance)})`);
+        continue;
+      }
+      
+      logger.progress(i + 1, this.wallets.length, 'Reclaiming SOL');
+      
+      try {
+        // Send from sub-wallet back to main wallet
+        const signature = await this.sendTransactionWithRetry(
+          wallet,
+          this.mainWallet,
+          amountToReclaim
+        );
+        
+        transactions.push({
+          wallet: shortAddress(wallet.publicKey),
+          amount: amountToReclaim,
+          signature
+        });
+        
+        totalReclaimed += amountToReclaim;
+        wallet.balance -= amountToReclaim;
+        
+        logger.debug(`Reclaimed ${formatSol(amountToReclaim)} from ${shortAddress(wallet.publicKey)}`);
+        
+      } catch (error: any) {
+        logger.error(`Failed to reclaim from ${wallet.label}: ${error?.message || String(error)}`);
+      }
+      
+      if (i < this.wallets.length - 1) {
+        await sleep(1500);
+      }
+    }
+    
+    logger.success(`Reclaimed ${formatSol(totalReclaimed)} from ${transactions.length} wallets`);
+    
+    return {
+      totalReclaimed,
+      transactions
+    };
+  }
+
+  // ============================================================
+  // RE-DISTRIBUTE EVENLY - NEW FUNCTION
+  // ============================================================
+
+  async redistributeEvenly(
+    amountPerWallet: number
+  ): Promise<{
+    totalDistributed: number;
+    transactions: Array<{ wallet: string; amount: number; signature: string }>;
+  }> {
+    if (!this.mainWallet) {
+      throw new Error('Main wallet not set.');
+    }
+    
+    if (this.wallets.length === 0) {
+      throw new Error('No sub wallets to fund.');
+    }
+    
+    const mainBalance = await this.getBalance(this.mainWallet);
+    const totalNeeded = amountPerWallet * this.wallets.length;
+    
+    if (mainBalance < totalNeeded) {
+      throw new Error(
+        `Insufficient balance. Have: ${formatSol(mainBalance)}, Need: ${formatSol(totalNeeded)}`
+      );
+    }
+    
+    logger.info(`Redistributing ${formatSol(amountPerWallet)} to each of ${this.wallets.length} wallets...`);
+    logger.info(`Total needed: ${formatSol(totalNeeded)}`);
+    
+    return this.distributeSOL('random', amountPerWallet * 0.9, amountPerWallet * 1.1);
   }
 
   // ============================================================
