@@ -23,10 +23,9 @@ async function redistribute() {
   
   // Use 80% of main balance
   const totalToDistribute = mainBalance * 0.8;
-  const perWallet = totalToDistribute / wallets.length;
   
   log.info(`Main balance: ${mainBalance.toFixed(4)} SOL`);
-  log.info(`Keeping ${(mainBalance * 0.2).toFixed(4)} SOL in main wallet`);
+  log.info(`Keeping ${(mainBalance * 0.2).toFixed(4)} SOL in main wallet for fees`);
   log.info(`Distributing ${totalToDistribute.toFixed(4)} SOL total`);
   
   // Generate realistic random amounts with WIDE variance

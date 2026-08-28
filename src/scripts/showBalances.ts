@@ -1,4 +1,4 @@
-import { Connection } from '@solana/web3.js';
+import { Connection, PublicKey } from '@solana/web3.js';
 import dotenv from 'dotenv';
 import { WalletManager } from '../core/walletManager';
 import { log } from '../utils/logger';
