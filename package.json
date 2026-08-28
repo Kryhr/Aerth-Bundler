@@ -10,6 +10,7 @@
   "fund": "npx tsx src/scripts/fundWallets.ts",
   "reclaim": "npx tsx src/scripts/reclaimSOL.ts",
   "redistribute": "npx tsx src/scripts/redistributeSOL.ts",
+  "balances": "npx tsx src/scripts/showBalances.ts",
   "build": "tsc",
   "test": "npx tsx test/devnet.test.ts"
 },
