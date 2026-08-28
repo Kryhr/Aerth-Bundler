@@ -4,7 +4,6 @@
  */
 
 import blessed from 'blessed';
-import { format } from 'util';
 
 import { logger } from '../utils/logger';
 import {
@@ -21,7 +20,7 @@ import { Bundler } from '../core/bundler';
 // ============================================================
 
 interface DashboardConfig {
-  refreshInterval: number; // milliseconds
+  refreshInterval: number;
   showPriceChart: boolean;
   showVolumeChart: boolean;
   maxHistoryItems: number;
@@ -72,7 +71,6 @@ export class Dashboard {
   private isRunning: boolean = false;
   private refreshTimer: NodeJS.Timeout | null = null;
   
-  // UI Elements
   private elements: {
     header?: blessed.Box;
     status?: blessed.Box;
@@ -85,7 +83,6 @@ export class Dashboard {
     footer?: blessed.Box;
   } = {};
   
-  // Data
   private priceHistory: ChartData[] = [];
   private volumeHistory: ChartData[] = [];
   private logMessages: string[] = [];
@@ -100,9 +97,6 @@ export class Dashboard {
   // START / STOP
   // ============================================================
 
-  /**
-   * Start the dashboard
-   */
   start(bundler: Bundler): void {
     if (this.isRunning) {
       logger.warn('Dashboard already running');
@@ -112,24 +106,14 @@ export class Dashboard {
     this.bundler = bundler;
     this.isRunning = true;
 
-    // Create screen
     this.createScreen();
-    
-    // Create UI elements
     this.createUI();
-    
-    // Start refresh loop
     this.startRefreshLoop();
-    
-    // Render
     this.screen?.render();
 
     logger.success('Dashboard started');
   }
 
-  /**
-   * Stop the dashboard
-   */
   stop(): void {
     this.isRunning = false;
     
@@ -150,9 +134,6 @@ export class Dashboard {
   // SCREEN CREATION
   // ============================================================
 
-  /**
-   * Create blessed screen
-   */
   private createScreen(): void {
     this.screen = blessed.screen({
       smartCSR: true,
@@ -170,18 +151,15 @@ export class Dashboard {
       useBCE: true,
     });
 
-    // Handle resize
     this.screen.on('resize', () => {
       this.resizeUI();
     });
 
-    // Handle exit
     this.screen.key(['escape', 'q', 'C-c'], () => {
       this.stop();
       process.exit(0);
     });
 
-    // Handle refresh
     this.screen.key(['r'], () => {
       this.refreshUI();
     });
@@ -191,9 +169,6 @@ export class Dashboard {
   // UI CREATION
   // ============================================================
 
-  /**
-   * Create all UI elements
-   */
   private createUI(): void {
     if (!this.screen) return;
 
@@ -201,10 +176,6 @@ export class Dashboard {
     const width = screen.width;
     const height = screen.height;
 
-    // ────────────────────────────────────────────────────────
-    // HEADER
-    // ────────────────────────────────────────────────────────
-    
     this.elements.header = blessed.box({
       parent: screen,
       top: 0,
@@ -224,10 +195,6 @@ export class Dashboard {
       },
     });
 
-    // ────────────────────────────────────────────────────────
-    // STATUS BAR
-    // ────────────────────────────────────────────────────────
-
     this.elements.status = blessed.box({
       parent: screen,
       top: 3,
@@ -245,10 +212,6 @@ export class Dashboard {
         fg: this.config.colors.secondary,
       },
     });
-
-    // ────────────────────────────────────────────────────────
-    // TOKEN INFO
-    // ────────────────────────────────────────────────────────
 
     this.elements.tokenInfo = blessed.box({
       parent: screen,
@@ -268,10 +231,6 @@ export class Dashboard {
       },
     });
 
-    // ────────────────────────────────────────────────────────
-    // WALLET INFO
-    // ────────────────────────────────────────────────────────
-
     this.elements.walletInfo = blessed.box({
       parent: screen,
       top: 6,
@@ -289,10 +248,6 @@ export class Dashboard {
         fg: this.config.colors.secondary,
       },
     });
-
-    // ────────────────────────────────────────────────────────
-    // PRICE CHART
-    // ────────────────────────────────────────────────────────
 
     if (this.config.showPriceChart) {
       this.elements.priceChart = blessed.box({
@@ -314,10 +269,6 @@ export class Dashboard {
       });
     }
 
-    // ────────────────────────────────────────────────────────
-    // VOLUME CHART
-    // ────────────────────────────────────────────────────────
-
     if (this.config.showVolumeChart) {
       this.elements.volumeChart = blessed.box({
         parent: screen,
@@ -338,10 +289,6 @@ export class Dashboard {
       });
     }
 
-    // ────────────────────────────────────────────────────────
-    // EXIT INFO
-    // ────────────────────────────────────────────────────────
-
     this.elements.exitInfo = blessed.box({
       parent: screen,
       top: 24,
@@ -359,10 +306,6 @@ export class Dashboard {
         fg: this.config.colors.warning,
       },
     });
-
-    // ────────────────────────────────────────────────────────
-    // LOG BOX
-    // ────────────────────────────────────────────────────────
 
     this.elements.logBox = blessed.log({
       parent: screen,
@@ -395,10 +338,6 @@ export class Dashboard {
       mouse: true,
     });
 
-    // ────────────────────────────────────────────────────────
-    // FOOTER
-    // ────────────────────────────────────────────────────────
-
     this.elements.footer = blessed.box({
       parent: screen,
       bottom: 0,
@@ -413,7 +352,6 @@ export class Dashboard {
       content: ' {gray-fg}Press [Q] to quit  |  [R] to refresh  |  [E] to exit early{/gray-fg}',
     });
 
-    // Initial render
     screen.render();
   }
 
@@ -421,9 +359,6 @@ export class Dashboard {
   // UI UPDATE
   // ============================================================
 
-  /**
-   * Refresh all UI elements
-   */
   private refreshUI(): void {
     if (!this.bundler || !this.screen) return;
 
@@ -431,7 +366,6 @@ export class Dashboard {
       const status = this.bundler.getStatus();
       this.statusData = status;
 
-      // Update each section
       this.updateHeader(status);
       this.updateStatus(status);
       this.updateTokenInfo(status);
@@ -441,7 +375,6 @@ export class Dashboard {
       this.updateExitInfo(status);
       this.updateLog();
 
-      // Render
       this.screen.render();
 
     } catch (error) {
@@ -449,9 +382,6 @@ export class Dashboard {
     }
   }
 
-  /**
-   * Update header
-   */
   private updateHeader(status: any): void {
     if (!this.elements.header) return;
 
@@ -465,9 +395,6 @@ export class Dashboard {
     );
   }
 
-  /**
-   * Update status bar
-   */
   private updateStatus(status: any): void {
     if (!this.elements.status) return;
 
@@ -479,9 +406,6 @@ export class Dashboard {
     );
   }
 
-  /**
-   * Update token info
-   */
   private updateTokenInfo(status: any): void {
     if (!this.elements.tokenInfo) return;
 
@@ -495,9 +419,6 @@ export class Dashboard {
     this.elements.tokenInfo.setContent(lines.join('\n'));
   }
 
-  /**
-   * Update wallet info
-   */
   private updateWalletInfo(status: any): void {
     if (!this.elements.walletInfo) return;
 
@@ -511,13 +432,9 @@ export class Dashboard {
     this.elements.walletInfo.setContent(lines.join('\n'));
   }
 
-  /**
-   * Update price chart
-   */
   private updatePriceChart(status: any): void {
     if (!this.elements.priceChart) return;
 
-    // Store price history
     if (status.currentPrice > 0) {
       this.priceHistory.push({
         timestamp: Date.now(),
@@ -529,18 +446,13 @@ export class Dashboard {
       }
     }
 
-    // Render chart
     const chart = this.renderChart(this.priceHistory, 40, 6);
     this.elements.priceChart.setContent(chart);
   }
 
-  /**
-   * Update volume chart
-   */
   private updateVolumeChart(status: any): void {
     if (!this.elements.volumeChart) return;
 
-    // Store volume history
     if (status.totalVolume > 0) {
       this.volumeHistory.push({
         timestamp: Date.now(),
@@ -552,14 +464,10 @@ export class Dashboard {
       }
     }
 
-    // Render chart
     const chart = this.renderChart(this.volumeHistory, 40, 6);
     this.elements.volumeChart.setContent(chart);
   }
 
-  /**
-   * Update exit info
-   */
   private updateExitInfo(status: any): void {
     if (!this.elements.exitInfo) return;
 
@@ -578,23 +486,14 @@ export class Dashboard {
     this.elements.exitInfo.setContent(lines.join('\n'));
   }
 
-  /**
-   * Update log
-   */
   private updateLog(): void {
     if (!this.elements.logBox) return;
-
-    // Add new log messages if any
-    // This would be populated from the logger
   }
 
   // ============================================================
   // CHART RENDERING
   // ============================================================
 
-  /**
-   * Render ASCII chart
-   */
   private renderChart(data: ChartData[], width: number, height: number): string {
     if (data.length === 0) {
       return ' No data yet...';
@@ -629,9 +528,6 @@ export class Dashboard {
     return chart;
   }
 
-  /**
-   * Render progress bar
-   */
   private renderProgressBar(progress: number, width: number): string {
     const filled = Math.round((progress / 100) * width);
     const empty = width - filled;
@@ -642,9 +538,6 @@ export class Dashboard {
   // HELPERS
   // ============================================================
 
-  /**
-   * Get phase icon
-   */
   private getPhaseIcon(phase: string): string {
     const icons: Record<string, string> = {
       idle: '⏸️',
@@ -659,9 +552,6 @@ export class Dashboard {
     return icons[phase] || '⏳';
   }
 
-  /**
-   * Get status color
-   */
   private getStatusColor(phase: string): string {
     const colors: Record<string, string> = {
       idle: 'gray',
@@ -676,9 +566,6 @@ export class Dashboard {
     return colors[phase] || 'gray';
   }
 
-  /**
-   * Get status text
-   */
   private getStatusText(status: any): string {
     const phase = status.phase;
     const texts: Record<string, string> = {
@@ -694,9 +581,6 @@ export class Dashboard {
     return texts[phase] || 'Unknown status';
   }
 
-  /**
-   * Get exit status
-   */
   private getExitStatus(status: any): string {
     if (status.phase === 'exiting') {
       return '🔥 EXECUTING EXIT';
@@ -714,9 +598,6 @@ export class Dashboard {
     return `📈 Building... ${multiplier.toFixed(2)}x / ${target}x`;
   }
 
-  /**
-   * Format profit
-   */
   private formatProfit(status: any): string {
     const multiplier = status.currentMultiplier || 1;
     const profit = (multiplier - 1) * 100;
@@ -724,11 +605,7 @@ export class Dashboard {
     return `{${color}-fg}${profit.toFixed(1)}%{/${color}-fg}`;
   }
 
-  /**
-   * Resize UI
-   */
   private resizeUI(): void {
-    // Recreate UI with new dimensions
     this.createUI();
     this.refreshUI();
   }
@@ -737,18 +614,13 @@ export class Dashboard {
   // REFRESH LOOP
   // ============================================================
 
-  /**
-   * Start refresh loop
-   */
   private startRefreshLoop(): void {
     if (this.refreshTimer) {
       clearInterval(this.refreshTimer);
     }
 
-    // Initial refresh
     setTimeout(() => this.refreshUI(), 100);
 
-    // Periodic refresh
     this.refreshTimer = setInterval(() => {
       if (this.isRunning) {
         this.refreshUI();
@@ -760,9 +632,6 @@ export class Dashboard {
   // LOGGING
   // ============================================================
 
-  /**
-   * Add log message
-   */
   addLog(message: string, level: string = 'info'): void {
     const timestamp = new Date().toLocaleTimeString();
     const colors: Record<string, string> = {
@@ -791,10 +660,6 @@ export class Dashboard {
 // SIMPLE TERMINAL DASHBOARD (Alternative)
 // ============================================================
 
-/**
- * Simple terminal dashboard without blessed
- * Useful for systems without full TTY support
- */
 export class SimpleDashboard {
   private bundler: Bundler | null = null;
   private isRunning: boolean = false;
@@ -805,9 +670,6 @@ export class SimpleDashboard {
     this.config = { ...DEFAULT_DASHBOARD_CONFIG, ...config };
   }
 
-  /**
-   * Start the dashboard
-   */
   start(bundler: Bundler): void {
     this.bundler = bundler;
     this.isRunning = true;
@@ -821,16 +683,12 @@ export class SimpleDashboard {
     this.refreshUI();
     this.startRefreshLoop();
 
-    // Handle exit
     process.on('SIGINT', () => {
       this.stop();
       process.exit(0);
     });
   }
 
-  /**
-   * Stop the dashboard
-   */
   stop(): void {
     this.isRunning = false;
     if (this.refreshTimer) {
@@ -839,25 +697,19 @@ export class SimpleDashboard {
     }
   }
 
-  /**
-   * Refresh UI
-   */
   private refreshUI(): void {
     if (!this.bundler) return;
 
     try {
       const status = this.bundler.getStatus();
       
-      // Clear screen and move cursor home
       process.stdout.write('\x1b[2J\x1b[H');
       
-      // Header
       console.log('═'.repeat(80));
       console.log(`  AERTH BUNDLER v1.0  |  ${status.phase.toUpperCase()}  |  ${new Date().toLocaleTimeString()}`);
       console.log('═'.repeat(80));
       console.log('');
 
-      // Token Info
       console.log('  📊 TOKEN INFORMATION');
       console.log(`    Name:        ${status.tokenName} (${status.tokenSymbol})`);
       console.log(`    Mint:        ${status.tokenMint ? shortAddress(status.tokenMint) : 'N/A'}`);
@@ -865,7 +717,6 @@ export class SimpleDashboard {
       console.log(`    Multiplier:  ${status.currentMultiplier?.toFixed(2) || '1.00'}x`);
       console.log('');
 
-      // Wallet Info
       console.log('  👛 WALLET INFORMATION');
       console.log(`    Total Wallets:   ${status.totalWallets || 0}`);
       console.log(`    Funded Wallets:  ${status.fundedWallets || 0}`);
@@ -873,7 +724,6 @@ export class SimpleDashboard {
       console.log(`    Current Profit:  ${this.formatProfit(status)}`);
       console.log('');
 
-      // Exit Info
       console.log('  🎯 EXIT INFORMATION');
       const progress = status.currentMultiplier && status.profitTarget
         ? Math.min((status.currentMultiplier / status.profitTarget) * 100, 100)
@@ -885,9 +735,7 @@ export class SimpleDashboard {
       console.log(`    Status:        ${this.getExitStatus(status)}`);
       console.log('');
 
-      // Recent Activity (from log)
       console.log('  📝 RECENT ACTIVITY');
-      // This would show recent logs
       console.log('    Monitoring...');
 
       console.log('');
@@ -900,9 +748,6 @@ export class SimpleDashboard {
     }
   }
 
-  /**
-   * Start refresh loop
-   */
   private startRefreshLoop(): void {
     if (this.refreshTimer) {
       clearInterval(this.refreshTimer);
@@ -915,18 +760,12 @@ export class SimpleDashboard {
     }, this.config.refreshInterval);
   }
 
-  /**
-   * Format profit
-   */
   private formatProfit(status: any): string {
     const multiplier = status.currentMultiplier || 1;
     const profit = (multiplier - 1) * 100;
     return profit.toFixed(1) + '%';
   }
 
-  /**
-   * Get exit status
-   */
   private getExitStatus(status: any): string {
     if (status.phase === 'exiting') {
       return '🔥 EXECUTING EXIT';
@@ -945,9 +784,4 @@ export class SimpleDashboard {
   }
 }
 
-// ============================================================
-// EXPORT
-// ============================================================
-
 export default Dashboard;
-export { SimpleDashboard };
