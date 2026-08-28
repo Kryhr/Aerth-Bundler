@@ -8,9 +8,8 @@ import path from 'path';
 import http from 'http';
 import { Server as SocketServer } from 'socket.io';
 
-import { logger, log } from '../utils/logger';
+import { logger } from '../utils/logger';
 import { Bundler } from '../core/bundler';
-import { formatPrice, formatSol, shortAddress } from '../utils/helpers';
 
 // ============================================================
 // TYPES
@@ -22,7 +21,7 @@ interface DashboardConfig {
 }
 
 // ============================================================
-// CHART SERVER CLASS
+// DASHBOARD SERVER CLASS
 // ============================================================
 
 export class DashboardServer {
@@ -108,8 +107,8 @@ export class DashboardServer {
         return res.json({ success: false, error: 'Bundler not initialized' });
       }
       try {
-        // Trigger exit early
-        log.info('🟢 Manual exit triggered from dashboard');
+        // This will trigger the exit in the bundler
+        logger.info('🟢 Manual exit triggered from dashboard');
         res.json({ success: true, message: 'Exit triggered' });
       } catch (error: any) {
         res.json({ success: false, error: error.message });
@@ -285,5 +284,8 @@ export class DashboardServer {
   }
 }
 
+// ============================================================
+// EXPORT DEFAULT
+// ============================================================
+
 export default DashboardServer;
-export { DashboardServer };
