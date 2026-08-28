@@ -95,7 +95,7 @@ export class WalletManager {
   }
 
   // ============================================================
-  // WALLET GENERATION - FIXED
+  // WALLET GENERATION
   // ============================================================
 
   generateWallet(index: number, label?: string): WalletInfo {
@@ -103,7 +103,7 @@ export class WalletManager {
     const mnemonic = generateMnemonic(128);
     const seed = mnemonicToSeedSync(mnemonic);
     
-    // Derive keypair from seed - FIXED PATH FORMAT
+    // Derive keypair from seed
     const path = `m/44'/501'/${index}'/0'`;
     const derivedSeed = derivePath(path, seed.toString('hex')).key;
     const keypair = Keypair.fromSeed(derivedSeed);
@@ -177,7 +177,6 @@ export class WalletManager {
     }
     
     const seed = mnemonicToSeedSync(seedPhrase);
-    // FIXED PATH FORMAT
     const path = `m/44'/501'/${index}'/0'`;
     const derivedSeed = derivePath(path, seed.toString('hex')).key;
     const keypair = Keypair.fromSeed(derivedSeed);
@@ -206,10 +205,10 @@ export class WalletManager {
       return wallet;
     }
     
-    // Generate new main wallet - FIXED: use index -1 but proper path
+    // Generate new main wallet
     const mnemonic = generateMnemonic(128);
     const seed = mnemonicToSeedSync(mnemonic);
-    const path = `m/44'/501'/0'/0'`;  // Main wallet uses index 0
+    const path = `m/44'/501'/0'/0'`;
     const derivedSeed = derivePath(path, seed.toString('hex')).key;
     const keypair = Keypair.fromSeed(derivedSeed);
     
@@ -446,7 +445,7 @@ export class WalletManager {
   }
 
   // ============================================================
-  // FUNDING
+  // FUNDING - FIXED VERSION
   // ============================================================
 
   async distributeSOL(
@@ -466,21 +465,55 @@ export class WalletManager {
     }
     
     const mainBalance = await this.getBalance(this.mainWallet);
-    const totalNeeded = this.wallets.length * (typeof amountPerWallet === 'number' ? amountPerWallet : maxAmount);
     
-    if (mainBalance < totalNeeded) {
+    // Calculate average amount for estimation
+    const avgAmount = (minAmount + maxAmount) / 2;
+    const estimatedTotal = this.wallets.length * avgAmount;
+    
+    // Only check if we have at least 80% of estimated total
+    // This allows for random distribution that might use less
+    const minimumRequired = estimatedTotal * 0.8;
+    
+    if (mainBalance < minimumRequired) {
       throw new Error(
         `Insufficient balance in main wallet. ` +
-        `Have: ${formatSol(mainBalance)}, Need: ${formatSol(totalNeeded)}`
+        `Have: ${formatSol(mainBalance)}, Estimated Need: ${formatSol(estimatedTotal)}`
       );
     }
     
     logger.info(`Distributing SOL to ${this.wallets.length} wallets...`);
     logger.info(`Main wallet balance: ${formatSol(mainBalance)}`);
+    logger.info(`Estimated distribution: ${formatSol(estimatedTotal)}`);
     
     const transactions: Array<{ wallet: string; amount: number; signature: string }> = [];
     let totalDistributed = 0;
     
+    // Determine actual amounts for each wallet
+    const amounts: number[] = [];
+    let totalToDistribute = 0;
+    
+    for (let i = 0; i < this.wallets.length; i++) {
+      let amount: number;
+      if (amountPerWallet === 'random') {
+        amount = randomSolAmount(minAmount, maxAmount);
+      } else {
+        amount = amountPerWallet;
+      }
+      amounts.push(amount);
+      totalToDistribute += amount;
+    }
+    
+    // If total exceeds main balance, scale down proportionally
+    if (totalToDistribute > mainBalance * 0.9) {
+      const scaleFactor = (mainBalance * 0.8) / totalToDistribute;
+      amounts.forEach((a, i) => {
+        amounts[i] = a * scaleFactor;
+      });
+      totalToDistribute = amounts.reduce((sum, a) => sum + a, 0);
+      logger.info(`Scaled amounts to fit balance: ${formatSol(totalToDistribute)}`);
+    }
+    
+    // Process in batches
     const batchSize = 5;
     const batches = [];
     for (let i = 0; i < this.wallets.length; i += batchSize) {
@@ -495,17 +528,14 @@ export class WalletManager {
         'Distributing SOL'
       );
       
-      for (const wallet of batch) {
-        let amount: number;
-        if (amountPerWallet === 'random') {
-          amount = randomSolAmount(minAmount, maxAmount);
-        } else {
-          amount = amountPerWallet;
-        }
+      for (let i = 0; i < batch.length; i++) {
+        const wallet = batch[i];
+        const walletIndex = this.wallets.indexOf(wallet);
+        const amount = amounts[walletIndex];
         
-        const remaining = mainBalance - totalDistributed;
-        if (amount > remaining * 0.8) {
-          amount = remaining * 0.8 / (this.wallets.length - transactions.length);
+        if (amount < 0.001) {
+          logger.warn(`Skipping ${wallet.label}: amount too small (${formatSol(amount)})`);
+          continue;
         }
         
         try {
