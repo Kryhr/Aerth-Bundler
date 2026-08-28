@@ -4,12 +4,12 @@
   "description": "AERTH BUNDLER - Automated token launch, volume simulation, and coordinated exit on Solana",
   "main": "dist/app.js",
   "scripts": {
-  "start": "npx ts-node src/app.ts",
-  "dev": "npx nodemon --exec npx ts-node src/app.ts",
-  "generate-wallets": "npx ts-node src/scripts/generateWallets.ts",
-  "fund": "npx ts-node src/scripts/fundWallets.ts",
+  "start": "npx tsx src/app.ts",
+  "dev": "npx nodemon --exec npx tsx src/app.ts",
+  "generate-wallets": "npx tsx src/scripts/generateWallets.ts",
+  "fund": "npx tsx src/scripts/fundWallets.ts",
   "build": "tsc",
-  "test": "npx ts-node test/devnet.test.ts"
+  "test": "npx tsx test/devnet.test.ts"
 },
   "dependencies": {
   "@coral-xyz/anchor": "^0.30.0",
