@@ -286,3 +286,4 @@ export class DashboardServer {
 }
 
 export default DashboardServer;
+export { DashboardServer };
