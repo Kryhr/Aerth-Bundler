@@ -1,0 +1,32 @@
+import { Connection } from '@solana/web3.js';
+import dotenv from 'dotenv';
+import { WalletManager } from '../core/walletManager';
+import { log } from '../utils/logger';
+
+dotenv.config();
+
+async function showBalances() {
+  const conn = new Connection(process.env.RPC_ENDPOINT || 'https://api.devnet.solana.com');
+  const wm = new WalletManager(conn, process.env.WALLET_ENCRYPTION_PASSWORD || 'default_password', './wallets');
+  await wm.initialize();
+  await wm.loadWallets();
+  
+  const mainWallet = wm.getMainWallet();
+  const mainBalance = mainWallet ? await wm.getBalance(mainWallet) : 0;
+  
+  log.info(`Main wallet: ${mainBalance.toFixed(4)} SOL`);
+  
+  const wallets = wm.getWallets();
+  let total = 0;
+  
+  for (const wallet of wallets) {
+    const balance = await wm.getBalance(wallet);
+    total += balance;
+    console.log(`  ${wallet.label}: ${balance.toFixed(4)} SOL`);
+  }
+  
+  log.info(`Total in sub-wallets: ${total.toFixed(4)} SOL`);
+  log.info(`Grand total: ${(mainBalance + total).toFixed(4)} SOL`);
+}
+
+showBalances().catch(console.error);
