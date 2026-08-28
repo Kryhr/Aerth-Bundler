@@ -99,11 +99,8 @@ export class WalletManager {
   // ============================================================
 
   generateWallet(index: number, label?: string): WalletInfo {
-    // Generate mnemonic (12 words)
     const mnemonic = generateMnemonic(128);
     const seed = mnemonicToSeedSync(mnemonic);
-    
-    // Derive keypair from seed
     const path = `m/44'/501'/${index}'/0'`;
     const derivedSeed = derivePath(path, seed.toString('hex')).key;
     const keypair = Keypair.fromSeed(derivedSeed);
@@ -205,7 +202,6 @@ export class WalletManager {
       return wallet;
     }
     
-    // Generate new main wallet
     const mnemonic = generateMnemonic(128);
     const seed = mnemonicToSeedSync(mnemonic);
     const path = `m/44'/501'/0'/0'`;
@@ -445,7 +441,7 @@ export class WalletManager {
   }
 
   // ============================================================
-  // SEND TRANSACTION WITH RETRY
+  // SEND TRANSACTION - FIXED
   // ============================================================
 
   private async sendTransactionWithRetry(
@@ -488,6 +484,13 @@ export class WalletManager {
     to: WalletInfo,
     amount: number
   ): Promise<string> {
+    // FIX: Convert SOL to lamports and round to integer
+    const lamports = Math.round(amount * LAMPORTS_PER_SOL);
+    
+    if (lamports < 1) {
+      throw new Error(`Amount too small: ${amount} SOL (${lamports} lamports)`);
+    }
+    
     const fromKeypair = Keypair.fromSecretKey(
       Buffer.from(from.privateKey, 'base64')
     );
@@ -497,7 +500,7 @@ export class WalletManager {
       SystemProgram.transfer({
         fromPubkey: fromKeypair.publicKey,
         toPubkey: toPublicKey,
-        lamports: amount * LAMPORTS_PER_SOL
+        lamports: lamports
       })
     );
     
@@ -511,7 +514,7 @@ export class WalletManager {
   }
 
   // ============================================================
-  // DISTRIBUTE SOL - FIXED WITH RATE LIMITING
+  // DISTRIBUTE SOL
   // ============================================================
 
   async distributeSOL(
@@ -532,7 +535,6 @@ export class WalletManager {
     
     const mainBalance = await this.getBalance(this.mainWallet);
     
-    // Calculate amounts for each wallet first
     const amounts: number[] = [];
     let totalToDistribute = 0;
     
@@ -547,7 +549,6 @@ export class WalletManager {
       totalToDistribute += amount;
     }
     
-    // Use 80% of main balance max
     const maxTotal = mainBalance * 0.8;
     if (totalToDistribute > maxTotal) {
       const scaleFactor = maxTotal / totalToDistribute;
@@ -568,7 +569,6 @@ export class WalletManager {
     const transactions: Array<{ wallet: string; amount: number; signature: string }> = [];
     let totalDistributed = 0;
     
-    // Process ONE wallet at a time with longer delays to avoid rate limits
     for (let i = 0; i < this.wallets.length; i++) {
       const wallet = this.wallets[i];
       const amount = amounts[i];
@@ -602,7 +602,6 @@ export class WalletManager {
         logger.error(`Failed to send to ${wallet.label}: ${error?.message || String(error)}`);
       }
       
-      // Longer delay between wallets to avoid rate limits
       if (i < this.wallets.length - 1) {
         await sleep(1500);
       }
@@ -617,11 +616,11 @@ export class WalletManager {
   }
 
   // ============================================================
-  // RECLAIM SOL - NEW FUNCTION
+  // RECLAIM SOL
   // ============================================================
 
   async reclaimSOL(
-    minBalanceToKeep: number = 0.001 // Keep tiny amount in sub-wallets for fees
+    minBalanceToKeep: number = 0.001
   ): Promise<{
     totalReclaimed: number;
     transactions: Array<{ wallet: string; amount: number; signature: string }>;
@@ -643,7 +642,6 @@ export class WalletManager {
       const wallet = this.wallets[i];
       const balance = await this.getBalance(wallet);
       
-      // Calculate amount to reclaim (keep minBalanceToKeep for fees)
       const amountToReclaim = balance - minBalanceToKeep;
       
       if (amountToReclaim < 0.001) {
@@ -654,7 +652,6 @@ export class WalletManager {
       logger.progress(i + 1, this.wallets.length, 'Reclaiming SOL');
       
       try {
-        // Send from sub-wallet back to main wallet
         const signature = await this.sendTransactionWithRetry(
           wallet,
           this.mainWallet,
@@ -690,7 +687,7 @@ export class WalletManager {
   }
 
   // ============================================================
-  // RE-DISTRIBUTE EVENLY - NEW FUNCTION
+  // REDISTRIBUTE EVENLY
   // ============================================================
 
   async redistributeEvenly(
