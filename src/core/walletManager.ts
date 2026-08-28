@@ -11,7 +11,7 @@ import {
   SystemProgram,
   Transaction,
   sendAndConfirmTransaction,
-  ComputeBudgetProgram  // <-- ADD THIS
+  ComputeBudgetProgram
 } from '@solana/web3.js';
 import { generateMnemonic, mnemonicToSeedSync, validateMnemonic } from 'bip39';
 import { derivePath } from 'ed25519-hd-key';
@@ -442,115 +442,115 @@ export class WalletManager {
   }
 
   // ============================================================
-  // SEND TRANSACTION - FIXED
+  // SEND TRANSACTION - PUBLIC VERSION
   // ============================================================
 
-  private async sendTransactionWithRetry(
-  from: WalletInfo,
-  to: WalletInfo,
-  amount: number,
-  maxRetries: number = 5
-): Promise<string> {
-  let lastError: Error | null = null;
-  
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      return await this.sendTransaction(from, to, amount);
-    } catch (error: any) {
-      lastError = error;
-      const errorMsg = error?.message || String(error);
-      
-      // Rate limit - wait longer
-      if (errorMsg.includes('429') || errorMsg.includes('Too Many Requests')) {
-        const waitTime = 5000 * Math.pow(2, attempt - 1);
-        logger.warn(`Rate limited, waiting ${waitTime/1000}s (attempt ${attempt}/${maxRetries})`);
+  public async sendTransactionWithRetry(
+    from: WalletInfo,
+    to: WalletInfo,
+    amount: number,
+    maxRetries: number = 5
+  ): Promise<string> {
+    let lastError: Error | null = null;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.sendTransaction(from, to, amount);
+      } catch (error: any) {
+        lastError = error;
+        const errorMsg = error?.message || String(error);
+        
+        // Rate limit - wait longer
+        if (errorMsg.includes('429') || errorMsg.includes('Too Many Requests')) {
+          const waitTime = 5000 * Math.pow(2, attempt - 1);
+          logger.warn(`Rate limited, waiting ${waitTime/1000}s (attempt ${attempt}/${maxRetries})`);
+          await sleep(waitTime);
+          continue;
+        }
+        
+        // Blockhash/expired errors - get fresh blockhash
+        if (errorMsg.includes('Blockhash') || errorMsg.includes('expired')) {
+          logger.warn(`Blockhash issue, refreshing (attempt ${attempt}/${maxRetries})`);
+          await this.connection.getLatestBlockhash();
+          const waitTime = 3000 * attempt;
+          await sleep(waitTime);
+          continue;
+        }
+        
+        // Connection errors - retry with backoff
+        if (errorMsg.includes('ECONNRESET') || errorMsg.includes('timeout') || errorMsg.includes('Unexpected server response')) {
+          const waitTime = 3000 * Math.pow(2, attempt - 1);
+          logger.warn(`Connection issue, waiting ${waitTime/1000}s (attempt ${attempt}/${maxRetries})`);
+          await sleep(waitTime);
+          continue;
+        }
+        
+        // Simulation failed - retry with fresh blockhash
+        if (errorMsg.includes('Simulation failed')) {
+          logger.warn(`Simulation failed, refreshing (attempt ${attempt}/${maxRetries})`);
+          await this.connection.getLatestBlockhash();
+          await sleep(2000);
+          continue;
+        }
+        
+        if (attempt === maxRetries) {
+          throw error;
+        }
+        
+        const waitTime = 1000 * Math.pow(2, attempt - 1);
+        logger.warn(`Error: ${errorMsg.substring(0, 100)}, retry ${attempt}/${maxRetries} in ${waitTime/1000}s`);
         await sleep(waitTime);
-        continue;
       }
-      
-      // Blockhash/expired errors - get fresh blockhash
-      if (errorMsg.includes('Blockhash') || errorMsg.includes('expired')) {
-        logger.warn(`Blockhash issue, refreshing (attempt ${attempt}/${maxRetries})`);
-        await this.connection.getLatestBlockhash();
-        const waitTime = 3000 * attempt;
-        await sleep(waitTime);
-        continue;
-      }
-      
-      // Connection errors - retry with backoff
-      if (errorMsg.includes('ECONNRESET') || errorMsg.includes('timeout') || errorMsg.includes('Unexpected server response')) {
-        const waitTime = 3000 * Math.pow(2, attempt - 1);
-        logger.warn(`Connection issue, waiting ${waitTime/1000}s (attempt ${attempt}/${maxRetries})`);
-        await sleep(waitTime);
-        continue;
-      }
-      
-      // Simulation failed - retry with fresh blockhash
-      if (errorMsg.includes('Simulation failed')) {
-        logger.warn(`Simulation failed, refreshing (attempt ${attempt}/${maxRetries})`);
-        await this.connection.getLatestBlockhash();
-        await sleep(2000);
-        continue;
-      }
-      
-      if (attempt === maxRetries) {
-        throw error;
-      }
-      
-      const waitTime = 1000 * Math.pow(2, attempt - 1);
-      logger.warn(`Error: ${errorMsg.substring(0, 100)}, retry ${attempt}/${maxRetries} in ${waitTime/1000}s`);
-      await sleep(waitTime);
     }
+    
+    throw lastError || new Error('Max retries exceeded');
   }
-  
-  throw lastError || new Error('Max retries exceeded');
-}
 
-private async sendTransaction(
-  from: WalletInfo,
-  to: WalletInfo,
-  amount: number
-): Promise<string> {
-  // Convert SOL to lamports and round to integer
-  const lamports = Math.round(amount * LAMPORTS_PER_SOL);
-  
-  if (lamports < 1) {
-    throw new Error(`Amount too small: ${amount} SOL (${lamports} lamports)`);
-  }
-  
-  const fromKeypair = Keypair.fromSecretKey(
-    Buffer.from(from.privateKey, 'base64')
-  );
-  const toPublicKey = new PublicKey(to.publicKey);
-  
-  // Get fresh blockhash
-  const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash('confirmed');
-  
-  const transaction = new Transaction({
-    feePayer: fromKeypair.publicKey,
-    blockhash,
-    lastValidBlockHeight,
-  }).add(
-    SystemProgram.transfer({
-      fromPubkey: fromKeypair.publicKey,
-      toPubkey: toPublicKey,
-      lamports: lamports
-    })
-  );
-  
-  const signature = await sendAndConfirmTransaction(
-    this.connection,
-    transaction,
-    [fromKeypair],
-    {
-      commitment: 'confirmed',
-      skipPreflight: false,
-      maxRetries: 3,
+  private async sendTransaction(
+    from: WalletInfo,
+    to: WalletInfo,
+    amount: number
+  ): Promise<string> {
+    // Convert SOL to lamports and round to integer
+    const lamports = Math.round(amount * LAMPORTS_PER_SOL);
+    
+    if (lamports < 1) {
+      throw new Error(`Amount too small: ${amount} SOL (${lamports} lamports)`);
     }
-  );
-  
-  return signature;
-}
+    
+    const fromKeypair = Keypair.fromSecretKey(
+      Buffer.from(from.privateKey, 'base64')
+    );
+    const toPublicKey = new PublicKey(to.publicKey);
+    
+    // Get fresh blockhash
+    const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash('confirmed');
+    
+    const transaction = new Transaction({
+      feePayer: fromKeypair.publicKey,
+      blockhash,
+      lastValidBlockHeight,
+    }).add(
+      SystemProgram.transfer({
+        fromPubkey: fromKeypair.publicKey,
+        toPubkey: toPublicKey,
+        lamports: lamports
+      })
+    );
+    
+    const signature = await sendAndConfirmTransaction(
+      this.connection,
+      transaction,
+      [fromKeypair],
+      {
+        commitment: 'confirmed',
+        skipPreflight: false,
+        maxRetries: 3,
+      }
+    );
+    
+    return signature;
+  }
 
   // ============================================================
   // DISTRIBUTE SOL
