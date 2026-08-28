@@ -25,6 +25,7 @@ import TokenFactory from './core/tokenFactory';
 import JupiterIntegration from './integrations/jupiter';
 import Bundler from './core/bundler';
 import Dashboard, { SimpleDashboard } from './dashboard/server';
+import ChartServer from './dashboard/chart/server';
 
 // ============================================================
 // TYPES
@@ -61,6 +62,10 @@ interface AppConfig {
   dashboardEnabled: boolean;
   dashboardType: 'full' | 'simple';
   refreshInterval: number;
+
+  // Chart dashboard
+  chartEnabled: boolean;
+  chartPort: number;
 }
 
 // ============================================================
@@ -89,6 +94,8 @@ const DEFAULT_APP_CONFIG: AppConfig = {
   dashboardEnabled: true,
   dashboardType: 'full',
   refreshInterval: 1000,
+  chartEnabled: true,
+  chartPort: 3001,
 };
 
 // ============================================================
@@ -101,6 +108,8 @@ export class App {
   private walletManager: WalletManager;
   private bundler: Bundler | null = null;
   private dashboard: Dashboard | SimpleDashboard | null = null;
+  private chartServer: ChartServer | null = null;
+  private lastChartVolume: number = 0;
   private isRunning: boolean = false;
   private shutdownRequested: boolean = false;
 
@@ -154,12 +163,17 @@ export class App {
       
       // Step 3: Create bundler
       this.bundler = this.createBundler();
-      
+
       // Step 4: Setup dashboard
       if (this.config.dashboardEnabled) {
         await this.setupDashboard();
       }
-      
+
+      // Step 4b: Setup live chart dashboard
+      if (this.config.chartEnabled) {
+        await this.setupChartServer();
+      }
+
       // Step 5: Start bundler
       await this.startBundler();
       
@@ -340,6 +354,18 @@ export class App {
     await sleep(500);
   }
 
+  /**
+   * Setup live chart dashboard (TradingView-style candlestick chart)
+   */
+  private async setupChartServer(): Promise<void> {
+    log.info('Starting chart dashboard...');
+
+    this.chartServer = new ChartServer(this.config.chartPort);
+    await this.chartServer.start();
+
+    log.success(`Chart dashboard: http://localhost:${this.config.chartPort}`);
+  }
+
   // ============================================================
   // BUNDLER EXECUTION
   // ============================================================
@@ -401,7 +427,22 @@ export class App {
    * Status update callback
    */
   private onStatusUpdate(status: any): void {
-    // Dashboard handles this
+    if (!this.chartServer) return;
+
+    if (status.tokenMint) {
+      this.chartServer.setToken(status.tokenMint, status.tokenSymbol);
+    }
+
+    if (status.currentPrice > 0) {
+      const totalVolume = status.totalVolume || 0;
+      const volumeDelta = Math.max(0, totalVolume - this.lastChartVolume);
+      this.lastChartVolume = totalVolume;
+
+      this.chartServer.pushTick({
+        price: status.currentPrice,
+        volume: volumeDelta,
+      });
+    }
   }
 
   /**
@@ -451,7 +492,13 @@ export class App {
       this.dashboard.stop();
       this.dashboard = null;
     }
-    
+
+    // Stop chart server
+    if (this.chartServer) {
+      await this.chartServer.stop();
+      this.chartServer = null;
+    }
+
     // Stop bundler
     if (this.bundler) {
       await this.bundler.stop();
@@ -542,7 +589,15 @@ function parseArgs(): Partial<AppConfig> {
       case '--no-dashboard':
         config.dashboardEnabled = false;
         break;
-        
+
+      case '--no-chart':
+        config.chartEnabled = false;
+        break;
+
+      case '--chart-port':
+        config.chartPort = parseInt(args[++i]);
+        break;
+
       case '--help':
         printHelp();
         process.exit(0);
@@ -573,6 +628,8 @@ Options:
   --symbol <symbol>     Token symbol
   --pattern <name>      Volume pattern: Organic Growth | Pump & Consolidate | Whale Accumulation | Volume Spikes | Market Making
   --no-dashboard        Disable dashboard UI
+  --no-chart            Disable the live TradingView chart dashboard
+  --chart-port <port>   Port for the chart dashboard (default: 3001)
   --help                Show this help
 
 Examples:
@@ -618,6 +675,8 @@ async function main(): Promise<void> {
     dashboardEnabled: process.env.DASHBOARD_ENABLED !== 'false' && cliConfig.dashboardEnabled !== false,
     dashboardType: process.env.DASHBOARD_TYPE === 'simple' ? 'simple' : 'full',
     refreshInterval: parseInt(process.env.REFRESH_INTERVAL || '1000'),
+    chartEnabled: process.env.CHART_ENABLED !== 'false' && cliConfig.chartEnabled !== false,
+    chartPort: parseInt(process.env.CHART_PORT || String(cliConfig.chartPort || 3001)),
   };
   
   // Validate config
