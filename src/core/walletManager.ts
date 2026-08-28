@@ -391,7 +391,7 @@ export class WalletManager {
   }
 
   // ============================================================
-  // BALANCE CHECKING
+  // BALANCE CHECKING - ALWAYS FRESH
   // ============================================================
 
   async getBalance(wallet: WalletInfo): Promise<number> {
@@ -409,6 +409,7 @@ export class WalletManager {
     const results: WalletWithBalance[] = [];
     
     for (const wallet of this.wallets) {
+      // ALWAYS fetch fresh from blockchain
       const solBalance = await this.getBalance(wallet);
       results.push({
         ...wallet,
@@ -442,7 +443,7 @@ export class WalletManager {
   }
 
   // ============================================================
-  // SEND TRANSACTION - PUBLIC VERSION
+  // SEND TRANSACTION
   // ============================================================
 
   public async sendTransactionWithRetry(
@@ -460,7 +461,6 @@ export class WalletManager {
         lastError = error;
         const errorMsg = error?.message || String(error);
         
-        // Rate limit - wait longer
         if (errorMsg.includes('429') || errorMsg.includes('Too Many Requests')) {
           const waitTime = 5000 * Math.pow(2, attempt - 1);
           logger.warn(`Rate limited, waiting ${waitTime/1000}s (attempt ${attempt}/${maxRetries})`);
@@ -468,7 +468,6 @@ export class WalletManager {
           continue;
         }
         
-        // Blockhash/expired errors - get fresh blockhash
         if (errorMsg.includes('Blockhash') || errorMsg.includes('expired')) {
           logger.warn(`Blockhash issue, refreshing (attempt ${attempt}/${maxRetries})`);
           await this.connection.getLatestBlockhash();
@@ -477,7 +476,6 @@ export class WalletManager {
           continue;
         }
         
-        // Connection errors - retry with backoff
         if (errorMsg.includes('ECONNRESET') || errorMsg.includes('timeout') || errorMsg.includes('Unexpected server response')) {
           const waitTime = 3000 * Math.pow(2, attempt - 1);
           logger.warn(`Connection issue, waiting ${waitTime/1000}s (attempt ${attempt}/${maxRetries})`);
@@ -485,7 +483,6 @@ export class WalletManager {
           continue;
         }
         
-        // Simulation failed - retry with fresh blockhash
         if (errorMsg.includes('Simulation failed')) {
           logger.warn(`Simulation failed, refreshing (attempt ${attempt}/${maxRetries})`);
           await this.connection.getLatestBlockhash();
@@ -511,7 +508,6 @@ export class WalletManager {
     to: WalletInfo,
     amount: number
   ): Promise<string> {
-    // Convert SOL to lamports and round to integer
     const lamports = Math.round(amount * LAMPORTS_PER_SOL);
     
     if (lamports < 1) {
@@ -523,7 +519,6 @@ export class WalletManager {
     );
     const toPublicKey = new PublicKey(to.publicKey);
     
-    // Get fresh blockhash
     const { blockhash, lastValidBlockHeight } = await this.connection.getLatestBlockhash('confirmed');
     
     const transaction = new Transaction({
@@ -572,6 +567,7 @@ export class WalletManager {
       throw new Error('No sub wallets to fund. Generate wallets first.');
     }
     
+    // ALWAYS fetch fresh from blockchain
     const mainBalance = await this.getBalance(this.mainWallet);
     
     const amounts: number[] = [];
@@ -633,7 +629,6 @@ export class WalletManager {
         });
         
         totalDistributed += amount;
-        wallet.balance += amount;
         
         logger.debug(`Sent ${formatSol(amount)} to ${shortAddress(wallet.publicKey)}`);
         
@@ -655,7 +650,7 @@ export class WalletManager {
   }
 
   // ============================================================
-  // RECLAIM SOL
+  // RECLAIM SOL - FIXED: Always fetches fresh balance
   // ============================================================
 
   async reclaimSOL(
@@ -679,6 +674,7 @@ export class WalletManager {
     
     for (let i = 0; i < this.wallets.length; i++) {
       const wallet = this.wallets[i];
+      // ALWAYS fetch fresh balance from blockchain
       const balance = await this.getBalance(wallet);
       
       const amountToReclaim = balance - minBalanceToKeep;
@@ -704,7 +700,6 @@ export class WalletManager {
         });
         
         totalReclaimed += amountToReclaim;
-        wallet.balance -= amountToReclaim;
         
         logger.debug(`Reclaimed ${formatSol(amountToReclaim)} from ${shortAddress(wallet.publicKey)}`);
         
@@ -743,6 +738,7 @@ export class WalletManager {
       throw new Error('No sub wallets to fund.');
     }
     
+    // ALWAYS fetch fresh from blockchain
     const mainBalance = await this.getBalance(this.mainWallet);
     const totalNeeded = amountPerWallet * this.wallets.length;
     
@@ -800,7 +796,7 @@ export class WalletManager {
   }
 
   // ============================================================
-  // SUMMARY
+  // SUMMARY - ALWAYS FRESH
   // ============================================================
 
   async getSummary(): Promise<{

@@ -12,7 +12,8 @@ async function showBalances() {
   await wm.loadWallets();
   
   const mainWallet = wm.getMainWallet();
-  const mainBalance = mainWallet ? await wm.getBalance(mainWallet) : 0;
+  // ALWAYS fetch fresh balance from blockchain
+  const mainBalance = mainWallet ? await conn.getBalance(new PublicKey(mainWallet.publicKey)) / 1e9 : 0;
   
   log.info(`Main wallet: ${mainBalance.toFixed(4)} SOL`);
   
@@ -20,7 +21,8 @@ async function showBalances() {
   let total = 0;
   
   for (const wallet of wallets) {
-    const balance = await wm.getBalance(wallet);
+    // ALWAYS fetch fresh balance from blockchain
+    const balance = await conn.getBalance(new PublicKey(wallet.publicKey)) / 1e9;
     total += balance;
     console.log(`  ${wallet.label}: ${balance.toFixed(4)} SOL`);
   }
