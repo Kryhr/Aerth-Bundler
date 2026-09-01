@@ -20,6 +20,7 @@ import path from 'path';
 import crypto from 'crypto';
 
 import { logger } from '../utils/logger';
+import { withTimeout } from './localMarket';
 import { 
   sleep, 
   randomSolAmount, 
@@ -397,7 +398,7 @@ export class WalletManager {
   async getBalance(wallet: WalletInfo): Promise<number> {
     try {
       const publicKey = new PublicKey(wallet.publicKey);
-      const balance = await this.connection.getBalance(publicKey);
+      const balance = await withTimeout(this.connection.getBalance(publicKey), 10000, 'getBalance timed out');
       return balance / LAMPORTS_PER_SOL;
     } catch (error) {
       logger.error(`Failed to get balance for ${shortAddress(wallet.publicKey)}`, error);
@@ -406,20 +407,35 @@ export class WalletManager {
   }
 
   async getAllBalances(): Promise<WalletWithBalance[]> {
-    const results: WalletWithBalance[] = [];
-    
-    for (const wallet of this.wallets) {
-      // ALWAYS fetch fresh from blockchain
-      const solBalance = await this.getBalance(wallet);
-      results.push({
-        ...wallet,
-        solBalance,
-        tokenBalance: wallet.tokenBalance || 0,
-        isFunded: solBalance > 0.001
+    // Batched into one getMultipleAccountsInfo call instead of N individual
+    // getBalance RPC calls - this is called frequently (wallet prep, buy
+    // sizing) and was a real contributor to devnet 429 rate-limiting.
+    try {
+      const pubkeys = this.wallets.map(w => new PublicKey(w.publicKey));
+      const accountInfos = await withTimeout(
+        this.connection.getMultipleAccountsInfo(pubkeys),
+        10000,
+        'getMultipleAccountsInfo timed out'
+      );
+
+      return this.wallets.map((wallet, i) => {
+        const solBalance = (accountInfos[i]?.lamports || 0) / LAMPORTS_PER_SOL;
+        return {
+          ...wallet,
+          solBalance,
+          tokenBalance: wallet.tokenBalance || 0,
+          isFunded: solBalance > 0.001,
+        };
       });
+    } catch (error) {
+      logger.error('Failed to batch-fetch wallet balances', error);
+      return this.wallets.map(wallet => ({
+        ...wallet,
+        solBalance: 0,
+        tokenBalance: wallet.tokenBalance || 0,
+        isFunded: false,
+      }));
     }
-    
-    return results;
   }
 
   async checkAllFunded(minBalance: number = 0.001): Promise<boolean> {

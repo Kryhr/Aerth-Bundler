@@ -7,22 +7,26 @@
 import { Connection } from '@solana/web3.js';
 import dotenv from 'dotenv';
 
-import { logger, log } from '../utils/logger';
+import { log } from '../utils/logger';
 import { WalletManager } from '../core/walletManager';
 import { formatSol } from '../utils/helpers';
+import { resolveRpcEndpoint, resolveWalletFolder } from '../config/constants';
 
 dotenv.config();
+
+if (process.argv.includes('--mainnet')) {
+  process.env.NETWORK = 'mainnet';
+} else if (process.argv.includes('--devnet')) {
+  process.env.NETWORK = 'devnet';
+}
 
 async function fundWallets() {
   log.section('💰 FUNDING WALLETS');
 
-  const connection = new Connection(
-    process.env.RPC_ENDPOINT || 'https://api.devnet.solana.com',
-    'confirmed'
-  );
+  const connection = new Connection(resolveRpcEndpoint(), 'confirmed');
 
   const password = process.env.WALLET_ENCRYPTION_PASSWORD || 'default_password';
-  const walletFolder = process.env.WALLET_FOLDER || './wallets';
+  const walletFolder = resolveWalletFolder();
 
   const walletManager = new WalletManager(connection, password, walletFolder);
   await walletManager.initialize();

@@ -5,12 +5,14 @@
 
 import { Connection } from '@solana/web3.js';
 import dotenv from 'dotenv';
+import readline from 'readline';
 
 import { logger, log } from './utils/logger';
 import { WalletManager } from './core/walletManager';
 import Bundler from './core/bundler';
 import { DashboardServer } from './dashboard/server';
-import { sleep } from './utils/helpers';
+import { sleep, formatUsd } from './utils/helpers';
+import { resolveRpcEndpoint, resolveWsEndpoint, resolveWalletFolder } from './config/constants';
 
 dotenv.config();
 
@@ -26,6 +28,11 @@ interface AppConfig {
   walletFolder: string;
   tokenName: string;
   tokenSymbol: string;
+  tokenIconPath: string;
+  tokenDescription: string;
+  tokenTwitter: string;
+  tokenTelegram: string;
+  tokenWebsite: string;
   tokenSupply: number;
   initialLiquidity: number;
   numberOfWallets: number;
@@ -52,6 +59,11 @@ const DEFAULT_CONFIG: AppConfig = {
   walletFolder: './wallets',
   tokenName: 'LARPAI',
   tokenSymbol: 'LARP',
+  tokenIconPath: '',
+  tokenDescription: '',
+  tokenTwitter: '',
+  tokenTelegram: '',
+  tokenWebsite: '',
   tokenSupply: 1000000000,
   initialLiquidity: 1.0,
   numberOfWallets: 10,
@@ -60,7 +72,7 @@ const DEFAULT_CONFIG: AppConfig = {
   targetMultiplier: 3.0,
   exitTimerHours: 5,
   maxSlippage: 50,
-  targetDailyVolume: 50,
+  targetDailyVolume: 500,
   volumePattern: 'Organic Growth',
   dashboardEnabled: true,
   dashboardPort: 3001,
@@ -78,6 +90,7 @@ export class App {
   private dashboard: DashboardServer | null = null;
   private isRunning: boolean = false;
   private shutdownRequested: boolean = false;
+  private tickerInterval: NodeJS.Timeout | null = null;
 
   constructor(config: Partial<AppConfig> = {}) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -132,7 +145,13 @@ export class App {
       // Step 5: Start bundler
       await this.startBundler();
 
-      // Step 6: Wait for completion
+      // Step 6: Enable terminal hotkeys
+      this.setupHotkeys();
+
+      // Step 7: Start the live ticker
+      this.startTicker();
+
+      // Step 8: Wait for completion
       await this.waitForCompletion();
 
     } catch (error) {
@@ -205,6 +224,11 @@ export class App {
       {
         tokenName: this.config.tokenName,
         tokenSymbol: this.config.tokenSymbol,
+        tokenIconPath: this.config.tokenIconPath,
+        tokenDescription: this.config.tokenDescription,
+        tokenTwitter: this.config.tokenTwitter,
+        tokenTelegram: this.config.tokenTelegram,
+        tokenWebsite: this.config.tokenWebsite,
         tokenSupply: this.config.tokenSupply,
         initialLiquidity: this.config.initialLiquidity,
         numberOfWallets: this.config.numberOfWallets,
@@ -220,6 +244,12 @@ export class App {
     );
 
     bundler.onComplete((result) => {
+      if (!result.positionsClosed) {
+        log.section('⚠️  STOPPED WITHOUT CLOSING POSITIONS');
+        console.log(`  Nothing was sold or swept back - wallets still hold their tokens.`);
+        return;
+      }
+
       log.section('🎉 BUNDLER COMPLETE');
       console.log(`  Status:      ${result.status.phase}`);
       console.log(`  Multiplier:  ${result.status.currentMultiplier?.toFixed(2) || '1.00'}x`);
@@ -290,6 +320,97 @@ export class App {
   }
 
   // ============================================================
+  // HOTKEYS
+  // ============================================================
+
+  private setupHotkeys(): void {
+    if (!process.stdin.isTTY) {
+      log.info('No interactive TTY - terminal hotkeys disabled (use the dashboard buttons instead)');
+      return;
+    }
+
+    readline.emitKeypressEvents(process.stdin);
+    process.stdin.setRawMode(true);
+    process.stdin.resume();
+
+    log.info('⌨️  Hotkeys: [C] Close all positions now  [P] Pause volume  [R] Resume volume  [Q] Quit');
+
+    process.stdin.on('keypress', async (_str, key) => {
+      if (!key) return;
+
+      if (key.ctrl && key.name === 'c') {
+        console.log('\nCtrl+C pressed. Shutting down gracefully...');
+        await this.shutdown();
+        process.exit(0);
+      }
+
+      if (!this.bundler) return;
+
+      try {
+        switch (key.name) {
+          case 'c': {
+            log.warn('⌨️  [C] pressed - closing all positions now');
+            // Selling 10 real wallets (even "simultaneously") is a real
+            // on-chain operation, not instant - each sell is a confirmed
+            // devnet transaction. Set the expectation up front instead of
+            // leaving a silent gap where it looks like the hotkey didn't
+            // register anything.
+            console.log('⏳ Selling all positions on-chain now - this takes a few seconds, watch for SOLD lines below...');
+            const closed = await this.bundler.forceExitNow();
+            console.log(closed
+              ? '\nPositions closed. Shutting down...'
+              : '\nExit did NOT fully succeed - some positions may still be open. Shutting down...');
+            await this.shutdown();
+            process.exit(0);
+          }
+          case 'p':
+            log.info('⌨️  [P] pressed - pausing volume simulation');
+            this.bundler.pauseVolume();
+            break;
+          case 'r':
+            log.info('⌨️  [R] pressed - resuming volume simulation');
+            this.bundler.resumeVolume();
+            break;
+          case 'q':
+            console.log('\n[Q] pressed. Shutting down gracefully...');
+            await this.shutdown();
+            process.exit(0);
+        }
+      } catch (error) {
+        log.error(`Hotkey [${key.name}] handler failed`, error);
+      }
+    });
+  }
+
+  // ============================================================
+  // LIVE TICKER
+  // ============================================================
+
+  private startTicker(): void {
+    if (this.tickerInterval) {
+      clearInterval(this.tickerInterval);
+    }
+
+    this.tickerInterval = setInterval(() => {
+      if (!this.bundler) return;
+
+      const status = this.bundler.getStatus();
+      if (status.phase === 'complete' || status.phase === 'error' || status.phase === 'idle') {
+        return;
+      }
+
+      const multiplier = status.currentMultiplier || 1;
+      const sign = status.profitSol >= 0 ? '+' : '';
+      const solUsdPrice = parseFloat(process.env.SOL_USD_PRICE || '150');
+      const marketCapUsd = formatUsd((status.currentPrice || 0) * (status.tokenSupply || 0) * solUsdPrice);
+      console.log(
+        `📈 ${status.tokenSymbol} | ${marketCapUsd} mcap | ${multiplier.toFixed(2)}x | ${sign}${status.profitSol.toFixed(4)} SOL ` +
+        `(in: ${status.totalInvested.toFixed(4)} SOL) | vol: ${status.totalVolume.toFixed(4)} SOL | [C] to close`
+      );
+    }, 5000);
+  }
+
+  // ============================================================
   // WAIT FOR COMPLETION
   // ============================================================
 
@@ -311,6 +432,11 @@ export class App {
 
     log.info('Shutting down...');
 
+    if (this.tickerInterval) {
+      clearInterval(this.tickerInterval);
+      this.tickerInterval = null;
+    }
+
     if (this.dashboard) {
       this.dashboard.stop();
       this.dashboard = null;
@@ -331,18 +457,36 @@ export class App {
 // ============================================================
 
 async function main(): Promise<void> {
+  // Parse --devnet/--mainnet FIRST and set process.env.NETWORK before
+  // resolving anything else - resolveRpcEndpoint()/resolveWsEndpoint()/
+  // resolveWalletFolder() all key off NETWORK. The old order resolved the
+  // endpoints first and then had --devnet/--mainnet overwrite them with the
+  // hardcoded PUBLIC endpoints directly, which silently threw away a
+  // configured dedicated RPC (e.g. Helius) every time either flag was used.
+  const args = process.argv.slice(2);
+  for (const arg of args) {
+    if (arg === '--devnet') {
+      process.env.NETWORK = 'devnet';
+    } else if (arg === '--mainnet') {
+      process.env.NETWORK = 'mainnet';
+    }
+  }
+
   const isDevnet = process.env.NETWORK !== 'mainnet';
 
   const config: AppConfig = {
-    rpcEndpoint: process.env.RPC_ENDPOINT || 
-      (isDevnet ? 'https://api.devnet.solana.com' : 'https://api.mainnet-beta.solana.com'),
-    wsEndpoint: process.env.WS_ENDPOINT || 
-      (isDevnet ? 'wss://api.devnet.solana.com' : 'wss://api.mainnet-beta.solana.com'),
+    rpcEndpoint: resolveRpcEndpoint(),
+    wsEndpoint: resolveWsEndpoint(),
     isDevnet: isDevnet,
     walletPassword: process.env.WALLET_ENCRYPTION_PASSWORD || 'default_password_change_me',
-    walletFolder: process.env.WALLET_FOLDER || './wallets',
+    walletFolder: resolveWalletFolder(),
     tokenName: process.env.TOKEN_NAME || 'LARPAI',
     tokenSymbol: process.env.TOKEN_SYMBOL || 'LARP',
+    tokenIconPath: process.env.TOKEN_ICON_PATH || '',
+    tokenDescription: process.env.TOKEN_DESCRIPTION || '',
+    tokenTwitter: process.env.TOKEN_TWITTER || '',
+    tokenTelegram: process.env.TOKEN_TELEGRAM || '',
+    tokenWebsite: process.env.TOKEN_WEBSITE || '',
     tokenSupply: parseInt(process.env.TOKEN_SUPPLY || '1000000000'),
     initialLiquidity: parseFloat(process.env.INITIAL_LIQUIDITY || '1.0'),
     numberOfWallets: parseInt(process.env.NUMBER_OF_WALLETS || '10'),
@@ -351,24 +495,20 @@ async function main(): Promise<void> {
     targetMultiplier: parseFloat(process.env.TARGET_MULTIPLIER || '3.0'),
     exitTimerHours: parseFloat(process.env.EXIT_TIMER_HOURS || '5'),
     maxSlippage: parseFloat(process.env.MAX_SLIPPAGE || '50'),
-    targetDailyVolume: parseFloat(process.env.TARGET_DAILY_VOLUME || '50'),
+    targetDailyVolume: parseFloat(process.env.TARGET_DAILY_VOLUME || '500'),
     volumePattern: process.env.VOLUME_PATTERN || 'Organic Growth',
     dashboardEnabled: process.env.DASHBOARD_ENABLED !== 'false',
     dashboardPort: parseInt(process.env.DASHBOARD_PORT || '3001'),
   };
 
-  // Parse command line args
-  const args = process.argv.slice(2);
-  for (const arg of args) {
-    if (arg === '--devnet') {
-      config.isDevnet = true;
-      config.rpcEndpoint = 'https://api.devnet.solana.com';
-    } else if (arg === '--mainnet') {
-      config.isDevnet = false;
-      config.rpcEndpoint = 'https://api.mainnet-beta.solana.com';
-    } else if (arg === '--no-dashboard') {
-      config.dashboardEnabled = false;
-    }
+  if (args.includes('--no-dashboard')) {
+    config.dashboardEnabled = false;
+  }
+
+  if (!config.isDevnet) {
+    log.warn('⚠️  MAINNET RUN - real SOL, real consequences. Wallets: ' + config.walletFolder);
+  } else {
+    log.info(`Devnet run. Wallets: ${config.walletFolder}`);
   }
 
   // Create and run app
@@ -393,10 +533,14 @@ async function main(): Promise<void> {
     process.exit(1);
   });
 
-  process.on('unhandledRejection', async (error) => {
-    log.error('Unhandled rejection', error);
-    await app.shutdown();
-    process.exit(1);
+  process.on('unhandledRejection', (error) => {
+    // Devnet rate-limiting (429s) is expected and frequent - some of it
+    // surfaces through internal library promise chains (e.g. web3.js's own
+    // websocket confirmation subscription) that our own retry/timeout
+    // wrapping can't reach. Killing the whole run over one of those would
+    // undo minutes of real progress for a transient, already-retried
+    // network hiccup - log it and keep going instead.
+    log.error('Unhandled rejection (continuing)', error);
   });
 
   // Run

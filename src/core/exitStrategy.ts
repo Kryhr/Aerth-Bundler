@@ -5,7 +5,7 @@
  */
 
 import { Connection, PublicKey } from '@solana/web3.js';
-import { getAssociatedTokenAddress, getAccount } from '@solana/spl-token';
+import { getAssociatedTokenAddress, getAccount, AccountLayout } from '@solana/spl-token';
 
 import { logger } from '../utils/logger';
 import {
@@ -19,7 +19,7 @@ import {
   chunkArray,
 } from '../utils/helpers';
 import { WalletInfo } from '../config/constants';
-import JupiterIntegration from '../integrations/jupiter';
+import LocalMarket, { withTimeout } from './localMarket';
 
 // ============================================================
 // TYPES
@@ -29,7 +29,6 @@ interface ExitConfig {
   targetMultiplier: number; // 2.0 to 5.0
   maxSlippage: number;
   maxRetries: number;
-  useJupiter: boolean;
   simultaneousSell: boolean; // ALWAYS TRUE
   minProfitThreshold: number; // Minimum profit % to trigger
   maxPriceImpact: number; // Max % price impact allowed
@@ -74,7 +73,6 @@ const DEFAULT_EXIT_CONFIG: ExitConfig = {
   targetMultiplier: 5.0, // Default to 5x
   maxSlippage: 50,
   maxRetries: 3,
-  useJupiter: true,
   simultaneousSell: true, // ALL WALLETS AT ONCE
   minProfitThreshold: 2.0, // Minimum 2x before considering exit
   maxPriceImpact: 30, // Max 30% price impact
@@ -87,7 +85,7 @@ const DEFAULT_EXIT_CONFIG: ExitConfig = {
 
 export class ExitStrategy {
   private connection: Connection;
-  private jupiter: JupiterIntegration;
+  private market: LocalMarket;
   private tokenMint: PublicKey;
   private wallets: WalletInfo[];
   private tokenDecimals: number;
@@ -102,21 +100,23 @@ export class ExitStrategy {
 
   constructor(
     connection: Connection,
-    jupiter: JupiterIntegration,
+    market: LocalMarket,
     tokenMint: PublicKey,
     wallets: WalletInfo[],
     tokenDecimals: number = 9,
-    config: Partial<ExitConfig> = {}
+    config: Partial<ExitConfig> = {},
+    initialInvestment: number = 0
   ) {
     this.connection = connection;
-    this.jupiter = jupiter;
+    this.market = market;
     this.tokenMint = tokenMint;
     this.wallets = wallets;
     this.tokenDecimals = tokenDecimals;
     this.config = { ...DEFAULT_EXIT_CONFIG, ...config };
 
-    // Calculate initial investment (estimated from wallet funding)
-    this.initialInvestment = wallets.length * 0.1; // 0.1 SOL average per wallet
+    // Real SOL actually spent on the bundled buys, passed in by the bundler -
+    // NOT a guess, so profit/multiplier here matches the trigger condition.
+    this.initialInvestment = initialInvestment;
 
     logger.info('ExitStrategy initialized - SIMULTANEOUS SELL MODE', {
       wallets: wallets.length,
@@ -268,18 +268,64 @@ export class ExitStrategy {
       walletsWithTokens: walletsWithBalance.length,
     });
 
-    // Execute ALL sells in parallel using Promise.all
-    // This is the key - ALL wallets sell at exactly the same time
     const startTime = Date.now();
-    
-    const sellPromises = walletsWithBalance.map((wallet, index) => {
-      const balance = balancesWithBalance[index];
-      return this.executeSingleSell(wallet, balance);
+
+    // sellBatch decides every wallet's cascading price impact instantly,
+    // in-memory, then fires all the real on-chain transactions concurrently -
+    // this is what actually makes "sell everything at once" true. The old
+    // approach called the ordinary (serialized) sell() per wallet via
+    // Promise.all, which LOOKED concurrent from the caller's side but each
+    // one still had to wait for the previous wallet's full on-chain
+    // confirmation before its own price impact was even computed, stacking
+    // into 20-30+ seconds for 10 wallets.
+    const sellSpecs = walletsWithBalance.map((wallet, index) => ({
+      seller: wallet,
+      // Same 0.1% safety margin as before - eliminates the float round-trip
+      // "insufficient funds" failure class on a full-balance sell.
+      tokenAmount: balancesWithBalance[index] * 0.999,
+    }));
+
+    const batchResults = await this.market.sellBatch(sellSpecs, true);
+
+    const results: ExitTransaction[] = batchResults.map((r, i) => {
+      const wallet = walletsWithBalance[i];
+      const requestedAmount = sellSpecs[i].tokenAmount;
+
+      if (r.success) {
+        this.currentPrice = r.price;
+        logger.trade(
+          `✅ SOLD ${r.tokenAmount.toLocaleString()} tokens from ${shortAddress(wallet.publicKey)} ` +
+          `for ${formatSol(r.solAmount)}`,
+          {
+            wallet: shortAddress(wallet.publicKey),
+            tokenAmount: r.tokenAmount,
+            solReceived: r.solAmount,
+            signature: r.signature ? shortAddress(r.signature) : 'none',
+          }
+        );
+        return {
+          wallet: shortAddress(wallet.publicKey),
+          tokenAmount: r.tokenAmount,
+          solReceived: r.solAmount,
+          price: r.price,
+          signature: r.signature,
+          success: true,
+          timestamp: Date.now(),
+        };
+      }
+
+      logger.error(`❌ Sell failed for ${shortAddress(wallet.publicKey)}`, r.error);
+      return {
+        wallet: shortAddress(wallet.publicKey),
+        tokenAmount: requestedAmount,
+        solReceived: 0,
+        price: 0,
+        success: false,
+        error: r.error,
+        timestamp: Date.now(),
+      };
     });
 
-    // Wait for ALL sells to complete
-    const results = await Promise.all(sellPromises);
-    
     const duration = ((Date.now() - startTime) / 1000).toFixed(1);
     
     const successful = results.filter(r => r.success);
@@ -338,12 +384,16 @@ export class ExitStrategy {
       };
     }
 
-    try {
-      // Get current price before selling
-      await this.updatePrice();
-      const price = this.currentPrice;
+    // Selling "the wallet's exact full balance" is where a float round-trip
+    // (raw u64 -> float here -> raw u64 again in LocalMarket) can land one
+    // raw unit above the true on-chain balance, failing with "insufficient
+    // funds" even right after a fresh balance read. A 0.1% safety margin is
+    // imperceptible for a close-out and eliminates that failure class.
+    tokenBalance = tokenBalance * 0.999;
 
-      // Expected SOL from sale
+    try {
+      // Expected SOL from sale, priced off the curve's current reserves
+      const price = this.market.getPrice();
       const expectedSol = tokenBalance * price;
 
       logger.debug(`Selling ${tokenBalance.toLocaleString()} tokens from ${shortAddress(wallet.publicKey)}`, {
@@ -354,33 +404,30 @@ export class ExitStrategy {
       // Execute sell with retry
       const result = await retry(
         async () => {
-          const swapResult = await this.jupiter.sellTokens(
-            this.tokenMint,
-            tokenBalance,
-            wallet,
-            this.tokenDecimals,
-            this.config.maxSlippage
-          );
+          // Real exit sell-off - deliberately bypass the organic-trading
+          // price floor so "close all positions" can actually dump all the
+          // way back down to what the real capital supports.
+          const sellResult = await this.market.sell(wallet, tokenBalance, true);
 
-          if (!swapResult.success) {
-            throw new Error(swapResult.error || 'Sell failed');
+          if (!sellResult.success) {
+            throw new Error(sellResult.error || 'Sell failed');
           }
 
-          return swapResult;
+          return sellResult;
         },
         this.config.maxRetries,
         2000
       );
 
-      const solReceived = result.outputAmount / 1e9;
+      this.currentPrice = result.price;
 
       logger.trade(
         `✅ SOLD ${tokenBalance.toLocaleString()} tokens from ${shortAddress(wallet.publicKey)} ` +
-        `for ${formatSol(solReceived)}`,
+        `for ${formatSol(result.solAmount)}`,
         {
           wallet: shortAddress(wallet.publicKey),
           tokenAmount: tokenBalance,
-          solReceived: solReceived,
+          solReceived: result.solAmount,
           price: formatPrice(price),
           signature: result.signature ? shortAddress(result.signature) : 'none',
         }
@@ -389,7 +436,7 @@ export class ExitStrategy {
       return {
         wallet: shortAddress(wallet.publicKey),
         tokenAmount: tokenBalance,
-        solReceived: solReceived,
+        solReceived: result.solAmount,
         price: price,
         signature: result.signature,
         success: true,
@@ -419,30 +466,41 @@ export class ExitStrategy {
    * Get token balances for all wallets
    */
   private async getTokenBalances(): Promise<TokenBalance[]> {
-    const balances: TokenBalance[] = [];
+    // Batched into a single getMultipleAccountsInfo call instead of N
+    // individual getAccount RPC calls - this runs every ~6s for the whole
+    // monitoring phase, so this was one of the biggest contributors to the
+    // constant 429 rate-limiting seen during testing.
+    try {
+      const atas = await Promise.all(
+        this.wallets.map(w => getAssociatedTokenAddress(this.tokenMint, new PublicKey(w.publicKey)))
+      );
+      const accountInfos = await withTimeout(
+        this.connection.getMultipleAccountsInfo(atas),
+        10000,
+        'getMultipleAccountsInfo timed out'
+      );
 
-    for (const wallet of this.wallets) {
-      try {
-        const balance = await this.getTokenBalance(wallet);
-        const usdValue = balance * this.currentPrice;
-        
-        balances.push({
-          wallet,
-          balance,
-          usdValue,
-        });
-      } catch (error) {
-        logger.error(`Failed to get balance for ${shortAddress(wallet.publicKey)}`, error);
-        balances.push({
-          wallet,
-          balance: 0,
-          usdValue: 0,
-        });
-      }
+      const balances: TokenBalance[] = this.wallets.map((wallet, i) => {
+        const info = accountInfos[i];
+        let balance = 0;
+        if (info && info.data.length >= AccountLayout.span) {
+          try {
+            balance = Number(AccountLayout.decode(info.data).amount) / Math.pow(10, this.tokenDecimals);
+          } catch {
+            balance = 0;
+          }
+        }
+        return { wallet, balance, usdValue: balance * this.currentPrice };
+      });
+
+      this.tokenBalances = balances;
+      return balances;
+
+    } catch (error) {
+      logger.error('Failed to batch-fetch token balances', error);
+      this.tokenBalances = this.wallets.map(wallet => ({ wallet, balance: 0, usdValue: 0 }));
+      return this.tokenBalances;
     }
-
-    this.tokenBalances = balances;
-    return balances;
   }
 
   /**
@@ -455,11 +513,11 @@ export class ExitStrategy {
         new PublicKey(wallet.publicKey)
       );
 
-      const account = await getAccount(this.connection, ata);
+      const account = await withTimeout(getAccount(this.connection, ata), 10000, 'getTokenBalance timed out');
       return Number(account.amount) / Math.pow(10, this.tokenDecimals);
-      
+
     } catch (error) {
-      // Account might not exist (no tokens)
+      // Account might not exist (no tokens) - or the RPC call hung/timed out
       return 0;
     }
   }
@@ -492,19 +550,15 @@ export class ExitStrategy {
   // ============================================================
 
   /**
-   * Update current price
+   * Update current price from the bonding curve's live reserves
    */
-  private async updatePrice(): Promise<void> {
-    try {
-      const price = await this.jupiter.getTokenPrice(this.tokenMint);
-      if (price > 0) {
-        if (this.startPrice === 0) {
-          this.startPrice = price;
-        }
-        this.currentPrice = price;
+  private updatePrice(): void {
+    const price = this.market.getPrice();
+    if (price > 0) {
+      if (this.startPrice === 0) {
+        this.startPrice = price;
       }
-    } catch (error) {
-      logger.error('Failed to update price', error);
+      this.currentPrice = price;
     }
   }
 
@@ -607,8 +661,13 @@ export class ExitStrategy {
     await this.getTokenBalances();
 
     const totalTokens = this.tokenBalances.reduce((sum, tb) => sum + tb.balance, 0);
-    const estimatedSol = totalTokens * this.currentPrice;
-    
+    // Real, slippage-aware proceeds from selling everything right now - NOT
+    // totalTokens * currentPrice, which overstates value by assuming zero
+    // price impact. On a closed devnet rehearsal (only our own wallets, no
+    // outside capital), this can never exceed what was actually ever put
+    // into the curve.
+    const estimatedSol = this.market.estimateSellProceeds(totalTokens);
+
     const profit = estimatedSol - this.initialInvestment;
     const profitPercentage = this.initialInvestment > 0 ? profit / this.initialInvestment : 0;
     const multiplier = this.initialInvestment > 0 ? estimatedSol / this.initialInvestment : 1;

@@ -2,12 +2,19 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import dotenv from 'dotenv';
 import { WalletManager } from '../core/walletManager';
 import { log } from '../utils/logger';
+import { resolveRpcEndpoint, resolveWalletFolder } from '../config/constants';
 
 dotenv.config();
 
+if (process.argv.includes('--mainnet')) {
+  process.env.NETWORK = 'mainnet';
+} else if (process.argv.includes('--devnet')) {
+  process.env.NETWORK = 'devnet';
+}
+
 async function showBalances() {
-  const conn = new Connection(process.env.RPC_ENDPOINT || 'https://api.devnet.solana.com');
-  const wm = new WalletManager(conn, process.env.WALLET_ENCRYPTION_PASSWORD || 'default_password', './wallets');
+  const conn = new Connection(resolveRpcEndpoint());
+  const wm = new WalletManager(conn, process.env.WALLET_ENCRYPTION_PASSWORD || 'default_password', resolveWalletFolder());
   await wm.initialize();
   await wm.loadWallets();
   

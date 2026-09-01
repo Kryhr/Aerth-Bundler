@@ -24,6 +24,54 @@ export const NETWORKS = {
 
 export type Network = keyof typeof NETWORKS;
 
+/**
+ * Resolve the RPC endpoint from env vars the same way everywhere - scripts
+ * (reclaimSol.ts, redistributeSol.ts, showBalances.ts, etc.) used to each
+ * hardcode 'https://api.devnet.solana.com' as their fallback, so setting
+ * NETWORK=mainnet in .env without ALSO setting RPC_ENDPOINT would silently
+ * leave those scripts pointed at devnet while the main app correctly moved
+ * to mainnet. This is the single source of truth for that fallback.
+ *
+ * A dedicated RPC provider (Helius, QuickNode, etc.) issues SEPARATE URLs
+ * per network - the devnet URL and mainnet URL are different endpoints, not
+ * the same URL for both. A single flat RPC_ENDPOINT override would silently
+ * keep using the devnet dedicated endpoint even after switching NETWORK to
+ * mainnet (or vice versa), which for mainnet specifically means real-money
+ * transactions failing outright against a devnet-only endpoint. Network-
+ * specific overrides (DEVNET_RPC_ENDPOINT / MAINNET_RPC_ENDPOINT) take
+ * priority so switching NETWORK always resolves to the right endpoint
+ * automatically; RPC_ENDPOINT/WS_ENDPOINT remain as a legacy single-value
+ * override for anyone not using network-specific dedicated endpoints.
+ */
+export function resolveRpcEndpoint(): string {
+  const isMainnet = process.env.NETWORK === 'mainnet';
+  const networkSpecific = isMainnet ? process.env.MAINNET_RPC_ENDPOINT : process.env.DEVNET_RPC_ENDPOINT;
+  if (networkSpecific) return networkSpecific;
+  if (process.env.RPC_ENDPOINT) return process.env.RPC_ENDPOINT;
+  return isMainnet ? NETWORKS.mainnet.endpoint : NETWORKS.devnet.endpoint;
+}
+
+/**
+ * Wallets are kept in a network-specific folder so mainnet wallets (real
+ * money) can never be confused with or accidentally overwritten by devnet
+ * test wallets. Devnet keeps the original './wallets' folder (no migration
+ * needed for existing test wallets); mainnet gets its own fresh
+ * './wallets-mainnet'. WALLET_FOLDER, if set, is an explicit override that
+ * always wins.
+ */
+export function resolveWalletFolder(): string {
+  if (process.env.WALLET_FOLDER) return process.env.WALLET_FOLDER;
+  return process.env.NETWORK === 'mainnet' ? './wallets-mainnet' : './wallets';
+}
+
+export function resolveWsEndpoint(): string {
+  const isMainnet = process.env.NETWORK === 'mainnet';
+  const networkSpecific = isMainnet ? process.env.MAINNET_WS_ENDPOINT : process.env.DEVNET_WS_ENDPOINT;
+  if (networkSpecific) return networkSpecific;
+  if (process.env.WS_ENDPOINT) return process.env.WS_ENDPOINT;
+  return isMainnet ? NETWORKS.mainnet.wsEndpoint : NETWORKS.devnet.wsEndpoint;
+}
+
 // ============================================================
 // PROGRAM IDs (Solana Mainnet)
 // ============================================================

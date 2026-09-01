@@ -162,9 +162,25 @@ export class Logger {
   // ============================================================
 
   /**
+   * Winston spreads a raw string `meta` argument character-by-character
+   * into indexed keys ({"0":"F","1":"a",...}) instead of logging it as
+   * text - a real footgun for any call site passing a plain error message
+   * string as meta (e.g. `log.error('Failed', someErrorString)`). Errors
+   * get their message/stack pulled out explicitly since callers rely on
+   * `meta?.stack` downstream.
+   */
+  private normalizeMeta(meta?: any): any {
+    if (meta === undefined || meta === null) return meta;
+    if (typeof meta === 'string') return { message: meta };
+    if (meta instanceof Error) return { message: meta.message, stack: meta.stack };
+    return meta;
+  }
+
+  /**
    * Standard info log
    */
   info(message: string, meta?: any): void {
+    meta = this.normalizeMeta(meta);
     this.winstonLogger.info(this.formatMessage(message, ICONS.info), meta);
     if (this.isDebugMode) {
       console.log(chalk.dim(`  └─ ${JSON.stringify(meta || {})}`));
@@ -175,20 +191,21 @@ export class Logger {
    * Success log
    */
   success(message: string, meta?: any): void {
-    this.winstonLogger.info(this.formatMessage(message, ICONS.success, 'success'), meta);
+    this.winstonLogger.info(this.formatMessage(message, ICONS.success, 'success'), this.normalizeMeta(meta));
   }
 
   /**
    * Warning log
    */
   warn(message: string, meta?: any): void {
-    this.winstonLogger.warn(this.formatMessage(message, ICONS.warning), meta);
+    this.winstonLogger.warn(this.formatMessage(message, ICONS.warning), this.normalizeMeta(meta));
   }
 
   /**
    * Error log
    */
   error(message: string, meta?: any): void {
+    meta = this.normalizeMeta(meta);
     this.winstonLogger.error(this.formatMessage(message, ICONS.error), meta);
     // Print stack trace in debug mode
     if (this.isDebugMode && meta?.stack) {
@@ -201,7 +218,7 @@ export class Logger {
    */
   debug(message: string, meta?: any): void {
     if (this.isDebugMode) {
-      this.winstonLogger.debug(this.formatMessage(message, ICONS.debug), meta);
+      this.winstonLogger.debug(this.formatMessage(message, ICONS.debug), this.normalizeMeta(meta));
     }
   }
 

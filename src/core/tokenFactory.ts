@@ -14,6 +14,7 @@ import {
 import {
   createInitializeMintInstruction,
   getMinimumBalanceForRentExemptMint,
+  MINT_SIZE,
   TOKEN_PROGRAM_ID,
   getAssociatedTokenAddress,
   createAssociatedTokenAccountInstruction,
@@ -32,6 +33,15 @@ import { DEFAULT_CONFIG, WalletInfo } from '../config/constants';
 interface CreateTokenParams {
   name?: string;
   symbol?: string;
+  // Accepted and logged now so the config surface exists end-to-end, but NOT
+  // yet attached on-chain anywhere - real pump.fun metadata (image/socials)
+  // requires the pump.fun program integration (create_v2 + a metadata URI),
+  // which is a separate, not-yet-built piece. See PUMPFUN_INTEGRATION.md.
+  iconPath?: string;
+  description?: string;
+  twitter?: string;
+  telegram?: string;
+  website?: string;
   decimals?: number;
   supply?: number;
   initialLiquidity?: number;
@@ -68,6 +78,11 @@ export class TokenFactory {
     const {
       name = randomTokenName(DEFAULT_CONFIG.tokenNamePrefix),
       symbol = randomTokenSymbol(DEFAULT_CONFIG.tokenSymbolPrefix),
+      iconPath = '',
+      description = '',
+      twitter = '',
+      telegram = '',
+      website = '',
       decimals = 9,
       supply = 1_000_000_000,
       initialLiquidity = DEFAULT_CONFIG.initialLiquidity,
@@ -77,6 +92,14 @@ export class TokenFactory {
     logger.info(`Creating token: ${name} (${symbol})`);
     logger.info(`Supply: ${supply.toLocaleString()} tokens`);
     logger.info(`Initial liquidity: ${formatSol(initialLiquidity)}`);
+    if (iconPath || description || twitter || telegram || website) {
+      logger.info('Token metadata (not yet attached on-chain - pending pump.fun integration)', {
+        icon: iconPath || '(none)',
+        twitter: twitter || '(none)',
+        telegram: telegram || '(none)',
+        website: website || '(none)',
+      });
+    }
 
     const startTime = Date.now();
 
@@ -95,11 +118,15 @@ export class TokenFactory {
       );
 
       // Step 1: Create mint account
+      // NOTE: `space` must be MINT_SIZE (82 bytes), not the rent lamport amount.
+      // Passing the lamport figure as `space` was allocating a huge, wrongly-sized
+      // account, so the token program rejected the next instruction with
+      // "invalid account data for instruction".
       const mintRent = await getMinimumBalanceForRentExemptMint(this.connection);
       const createAccountIx = SystemProgram.createAccount({
         fromPubkey: creatorPublicKey,
         newAccountPubkey: mintAddress,
-        space: mintRent,
+        space: MINT_SIZE,
         lamports: mintRent,
         programId: TOKEN_PROGRAM_ID,
       });
@@ -128,7 +155,9 @@ export class TokenFactory {
       );
 
       // Step 4: Mint tokens to creator
-      const mintAmount = supply * Math.pow(10, decimals);
+      // Use BigInt: supply * 10^decimals overflows Number.MAX_SAFE_INTEGER for
+      // typical supplies (e.g. 1_000_000_000 * 10^9 = 1e18).
+      const mintAmount = BigInt(supply) * 10n ** BigInt(decimals);
       const mintToIx = createMintToInstruction(
         mintAddress,
         ata,

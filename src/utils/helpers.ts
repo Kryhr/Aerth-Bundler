@@ -38,6 +38,18 @@ export function formatSol(amount: number): string {
 }
 
 /**
+ * Format a USD amount the way Axiom/pump.fun style their market cap
+ * ($16.2K, $1.4M) - devnet has no real price feed, so this is fed a fixed
+ * assumed SOL/USD rate purely for realistic-looking display, never for
+ * trading math.
+ */
+export function formatUsd(amount: number): string {
+  if (amount >= 1_000_000) return `$${(amount / 1_000_000).toFixed(2)}M`;
+  if (amount >= 1_000) return `$${(amount / 1_000).toFixed(1)}K`;
+  return `$${amount.toFixed(2)}`;
+}
+
+/**
  * Format token amount with proper decimals
  */
 export function formatToken(amount: number, decimals: number = 9): string {

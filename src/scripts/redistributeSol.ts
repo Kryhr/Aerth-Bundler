@@ -2,12 +2,19 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import dotenv from 'dotenv';
 import { WalletManager } from '../core/walletManager';
 import { log } from '../utils/logger';
+import { resolveRpcEndpoint, resolveWalletFolder } from '../config/constants';
 
 dotenv.config();
 
+if (process.argv.includes('--mainnet')) {
+  process.env.NETWORK = 'mainnet';
+} else if (process.argv.includes('--devnet')) {
+  process.env.NETWORK = 'devnet';
+}
+
 async function redistribute() {
-  const conn = new Connection(process.env.RPC_ENDPOINT || 'https://api.devnet.solana.com');
-  const wm = new WalletManager(conn, process.env.WALLET_ENCRYPTION_PASSWORD || 'default_password', './wallets');
+  const conn = new Connection(resolveRpcEndpoint());
+  const wm = new WalletManager(conn, process.env.WALLET_ENCRYPTION_PASSWORD || 'default_password', resolveWalletFolder());
   await wm.initialize();
   await wm.loadWallets();
   
@@ -17,8 +24,21 @@ async function redistribute() {
     return;
   }
   
-  // ALWAYS fetch fresh balance from blockchain
-  const mainBalance = await conn.getBalance(new PublicKey(mainWallet.publicKey)) / 1e9;
+  // If this runs shortly after reclaimSol.ts while devnet confirmations are
+  // still settling, a single balance read can be stale - some reclaimed SOL
+  // arrives after we've already computed and sent the 80/20 split, leaving
+  // more than intended sitting in the main wallet with no error shown. Read
+  // twice a few seconds apart and only proceed once it's stable.
+  const mainWalletPubkey = new PublicKey(mainWallet.publicKey);
+  let mainBalance = await conn.getBalance(mainWalletPubkey) / 1e9;
+  for (let i = 0; i < 5; i++) {
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    const recheck = await conn.getBalance(mainWalletPubkey) / 1e9;
+    if (recheck === mainBalance) break;
+    log.info(`Balance still settling (${mainBalance.toFixed(4)} -> ${recheck.toFixed(4)} SOL), rechecking...`);
+    mainBalance = recheck;
+  }
+
   const wallets = wm.getWallets();
   
   // Use 80% of main balance
@@ -68,7 +88,14 @@ async function redistribute() {
   }
   
   log.success(`✅ Distributed ${totalSent.toFixed(4)} SOL to ${successCount}/${wallets.length} wallets`);
-  
+
+  // Every wallet except the last one already got a 1.5s settle window before
+  // the next loop iteration ran - the LAST wallet's transaction gets none,
+  // so the "final balances" check below could read it before it's actually
+  // confirmed and show a wrong, near-zero amount even though the real
+  // transfer landed fine. Give it the same breathing room.
+  await new Promise(resolve => setTimeout(resolve, 5000));
+
   // ALWAYS fetch fresh balance from blockchain
   const newMainBalance = await conn.getBalance(new PublicKey(mainWallet.publicKey)) / 1e9;
   log.info(`Main wallet remaining: ${newMainBalance.toFixed(4)} SOL`);
