@@ -2,6 +2,8 @@
 
 > Automated token launch, volume simulation, and coordinated exit on Solana
 
+UPDATES COMING SOON!
+
 ## ⚠️ DISCLAIMER
 
 **This software is for educational purposes only.** Using this tool may violate terms of service of various platforms and could be illegal in your jurisdiction. Use at your own risk. The authors assume no liability for any misuse of this software.
